@@ -1,10 +1,11 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { login as loginRequest } from "../api/auth";
+import { login as loginRequest, register as registerRequest } from "../api/auth";
 import { AUTH_LOGOUT_EVENT, clearTokens, getAccessToken, setTokens } from "./tokens";
 
 interface AuthContextValue {
   isAuthenticated: boolean;
   login: (username: string, password: string) => Promise<void>;
+  register: (username: string, password: string) => Promise<void>;
   logout: () => void;
 }
 
@@ -24,6 +25,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isAuthenticated,
       async login(username, password) {
         const tokens = await loginRequest(username, password);
+        setTokens(tokens);
+        setIsAuthenticated(true);
+      },
+      async register(username, password) {
+        const tokens = await registerRequest(username, password);
         setTokens(tokens);
         setIsAuthenticated(true);
       },

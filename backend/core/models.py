@@ -59,6 +59,9 @@ class Schedule(models.Model):
 
     class Meta:
         ordering = ["run_at"]
+        indexes = [
+            models.Index(fields=["status", "run_at"], name="core_sched_status_run_idx"),
+        ]
 
     def __str__(self) -> str:
         return f"{self.chat_ref} @ {self.run_at}"

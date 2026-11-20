@@ -24,8 +24,8 @@ Horários na UI são sempre **America/Sao_Paulo**.
 
 ### Fluxo principal
 
-1. Login JWT (usuário Django).
-2. Vincular conta: `start` (envia código) → `confirm` (código / senha 2FA) → status `connected`.
+1. Cadastro (`POST /api/auth/register/`) ou login JWT.
+2. Vincular conta: `start` (envia código) → `confirm` (código / senha 2FA) → status `connected`. Retry em `error`/`pending` reusa a mesma linha.
 3. Criar `Schedule` com chat, mensagem, `run_at`, antecedência (`lead_seconds`), janela e intervalo.
 4. O worker, a cada 1s, pega agendas `pending` com `run_at - lead_seconds <= agora`, marca `running` (sem duplicar), resolve o chat antes da hora e no `run_at` chama `send_message`.
 5. Cada tentativa vira `SendLog` (hora + latência em ms). Sucesso → `sent`. Flood → `failed`. Sessão inválida → conta `error`. Fim da janela sem sucesso → `failed`.
@@ -67,22 +67,24 @@ Agendamento, `attempt_at`, `success`, `error`, `latency_ms`.
 
 ## API (JWT)
 
-Auth: `POST /api/auth/login/` e `POST /api/auth/refresh/` (`username` / `password` Django).
+Auth: `POST /api/auth/register/`, `POST /api/auth/login/` e `POST /api/auth/refresh/` (`username` / `password`). Login e `accounts/start` têm throttle.
 
 Rotas autenticadas (sempre filtradas pelo `owner`):
 
 | Método | Caminho | Ação |
 | --- | --- | --- |
-| POST | `/api/accounts/start/` | Cria conta `pending`, `send_code_request`, guarda hash + sessão temporária criptografada |
+| POST | `/api/accounts/start/` | Cria conta `pending` (reusa `error`/`pending` do mesmo telefone) |
+| POST | `/api/accounts/{id}/retry/` | Reenvia código em `pending` ou `error` |
 | POST | `/api/accounts/{id}/confirm/` | `sign_in` (2FA e código inválido), sessão final, `connected` |
 | GET | `/api/accounts/` | Lista (sem sessão) |
 | DELETE | `/api/accounts/{id}/` | Logout Telethon + remove |
-| GET/POST | `/api/schedules/` | Listar / criar |
+| GET/POST | `/api/schedules/` | Listar / criar (só conta `connected`) |
+| PATCH/PUT/DELETE | `/api/schedules/{id}/` | Só se `pending` |
 | POST | `/api/schedules/{id}/cancel/` | Só se `pending` |
 | GET | `/api/send-logs/?schedule=` | Tentativas do agendamento |
-| GET | `/api/health/` | Saúde da API (público) |
+| GET | `/api/health/` | Saúde da API + Postgres (público) |
 
-Validações de agenda: `run_at` no futuro; lead 0–30; janela 1–60; intervalo ≥ 100; conta tem que ser do usuário.
+Validações de agenda: `run_at` no futuro; lead 0–30; janela 1–60; intervalo ≥ 100; conta do usuário e `connected`.
 
 ---
 
@@ -91,6 +93,7 @@ Validações de agenda: `run_at` no futuro; lead 0–30; janela 1–60; interval
 Command: `python manage.py run_worker` (alias: `worker`).
 
 - Poll a cada **1 segundo**.
+- Reaper: `running` preso após crash vira `pending` se a janela ainda vale, senão `failed`.
 - Claim atômico: `select_for_update(skip_locked=True)` + update `pending` → `running`.
 - Reusa clientes Telethon por conta; desconecta ociosos (`--idle-seconds`, default 30).
 - No horário: `send_message` a cada `retry_interval_ms` até sucesso ou `max_window_seconds`.
@@ -105,9 +108,10 @@ Command: `python manage.py run_worker` (alias: `worker`).
 
 Rotas: `/login`, `/contas`, `/agendamentos` (protegidas).
 
-- JWT no `localStorage`; axios com refresh automático no interceptor.
-- **Contas:** lista com status; 2 passos (telefone → código/2FA); remover.
-- **Agendamentos:** formulário (conta, chat, mensagem, data/hora Brasília, lead, janela, intervalo); tabela com polling **3s**; cancelar; detalhes com SendLog (hora + latência).
+- JWT no `localStorage`; axios com refresh automático no interceptor; “Sessão expirada” no login após 401.
+- Cadastro na mesma tela de login.
+- **Contas:** lista com status em português; 2 passos (telefone → código/2FA); “Tentar novamente” em `error`; remover.
+- **Agendamentos:** formulário (conta, chat, mensagem, data/hora Brasília, lead, janela, intervalo); editar `pending`; tabela com polling **3s** e loading; cancelar; detalhes fecham se a agenda sumir.
 - Validação no cliente + erros da API no banner e por campo.
 - Proxy Vite `/api` → `http://127.0.0.1:8000` (no Docker: `http://api:8000`).
 
@@ -163,13 +167,15 @@ make down
 - API: http://localhost:8000/api/health/  
 - Postgres: `localhost:5433`
 
-Usuário Django (se ainda não existir):
+Crie o usuário na tela **Criar conta** (http://localhost:5173/login) ou:
 
 ```bash
 docker compose exec api python manage.py createsuperuser
 ```
 
 Ambiente local de desenvolvimento já pode ter o usuário **`admin` / `admin123`**.
+
+A API sobe com **Gunicorn**; o frontend é o build do Vite servido pelo Nginx. Sem `FERNET_KEY` e `TELEGRAM_API_*` a API/worker recusam subir.
 
 ### Sem Docker na API (só o banco no Compose)
 
@@ -193,7 +199,9 @@ make test
 cd backend && python manage.py test
 ```
 
-Cobertura: JWT, permissões (agenda/conta de outro usuário), validações, login Telegram com Telethon mockado, claim atômico do worker (sem envio duplicado).
+Cobertura: JWT, cadastro, permissões, validações (conta `connected`, agenda `pending`), login Telegram mockado, retry sem duplicar conta, reaper de `running` preso, claim atômico do worker.
+
+CI: GitHub Actions (`python manage.py test` com Postgres 16).
 
 ---
 

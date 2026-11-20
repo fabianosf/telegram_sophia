@@ -1,19 +1,25 @@
 from asgiref.sync import async_to_sync
+from django.db import connection
+from django.db.utils import OperationalError
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.views import TokenObtainPairView
 
 from core.models import Schedule, SendLog, TelegramAccount
 from core.serializers import (
     AccountConfirmSerializer,
     AccountStartSerializer,
+    RegisterSerializer,
     ScheduleSerializer,
     SendLogSerializer,
     TelegramAccountSerializer,
 )
 from core.services.telegram_auth import TelegramAuthError, confirm_login, disconnect_session, send_login_code
+from core.throttles import AccountStartRateThrottle, LoginRateThrottle, RegisterRateThrottle
 from core.utils.crypto import decrypt, encrypt
 
 
@@ -22,7 +28,40 @@ class HealthView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
-        return Response({"status": "ok"})
+        try:
+            connection.ensure_connection()
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT 1")
+                cursor.fetchone()
+        except OperationalError:
+            return Response(
+                {"status": "error", "database": "error"},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        return Response({"status": "ok", "database": "ok"})
+
+
+class ThrottledTokenObtainPairView(TokenObtainPairView):
+    throttle_classes = [LoginRateThrottle]
+
+
+class RegisterView(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    throttle_classes = [RegisterRateThrottle]
+
+    def post(self, request):
+        serializer = RegisterSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+        refresh = RefreshToken.for_user(user)
+        return Response(
+            {
+                "access": str(refresh.access_token),
+                "refresh": str(refresh),
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class TelegramAccountViewSet(
@@ -37,19 +76,15 @@ class TelegramAccountViewSet(
     def get_queryset(self):
         return TelegramAccount.objects.filter(owner=self.request.user)
 
+    def get_throttles(self):
+        if getattr(self, "action", None) == "start":
+            return [AccountStartRateThrottle()]
+        return super().get_throttles()
+
     def _auth_error_response(self, exc: TelegramAuthError) -> Response:
         return Response({"detail": exc.detail}, status=exc.status_code)
 
-    @action(detail=False, methods=["post"], url_path="start")
-    def start(self, request):
-        serializer = AccountStartSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        account = TelegramAccount.objects.create(
-            owner=request.user,
-            label=serializer.validated_data["label"],
-            phone=serializer.validated_data["phone"],
-            status=TelegramAccount.Status.PENDING,
-        )
+    def _send_login_code(self, account: TelegramAccount) -> Response | None:
         try:
             phone_code_hash, session_string = async_to_sync(send_login_code)(
                 account.phone
@@ -61,11 +96,62 @@ class TelegramAccountViewSet(
 
         account.phone_code_hash = phone_code_hash
         account.session_encrypted = encrypt(session_string)
-        account.save(update_fields=["phone_code_hash", "session_encrypted"])
+        account.status = TelegramAccount.Status.PENDING
+        account.save(update_fields=["phone_code_hash", "session_encrypted", "status"])
+        return None
+
+    @action(detail=False, methods=["post"], url_path="start")
+    def start(self, request):
+        serializer = AccountStartSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        label = serializer.validated_data["label"]
+        phone = serializer.validated_data["phone"]
+        account = (
+            TelegramAccount.objects.filter(
+                owner=request.user,
+                phone=phone,
+                status__in=[
+                    TelegramAccount.Status.PENDING,
+                    TelegramAccount.Status.ERROR,
+                ],
+            )
+            .order_by("-created_at")
+            .first()
+        )
+        created = account is None
+        if account:
+            account.label = label
+            account.save(update_fields=["label"])
+        else:
+            account = TelegramAccount.objects.create(
+                owner=request.user,
+                label=label,
+                phone=phone,
+                status=TelegramAccount.Status.PENDING,
+            )
+        error_response = self._send_login_code(account)
+        if error_response:
+            return error_response
         return Response(
             TelegramAccountSerializer(account).data,
-            status=status.HTTP_201_CREATED,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
+
+    @action(detail=True, methods=["post"], url_path="retry")
+    def retry(self, request, pk=None):
+        account = self.get_object()
+        if account.status not in (
+            TelegramAccount.Status.PENDING,
+            TelegramAccount.Status.ERROR,
+        ):
+            return Response(
+                {"detail": "Only pending or error accounts can retry login."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        error_response = self._send_login_code(account)
+        if error_response:
+            return error_response
+        return Response(TelegramAccountSerializer(account).data)
 
     @action(detail=True, methods=["post"], url_path="confirm")
     def confirm(self, request, pk=None):
@@ -123,6 +209,26 @@ class ScheduleViewSet(viewsets.ModelViewSet):
         return Schedule.objects.filter(account__owner=self.request.user).select_related(
             "account"
         )
+
+    def _ensure_pending(self, schedule: Schedule) -> Response | None:
+        if schedule.status != Schedule.Status.PENDING:
+            return Response(
+                {"detail": "Only pending schedules can be changed."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return None
+
+    def update(self, request, *args, **kwargs):
+        blocked = self._ensure_pending(self.get_object())
+        if blocked:
+            return blocked
+        return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        blocked = self._ensure_pending(self.get_object())
+        if blocked:
+            return blocked
+        return super().destroy(request, *args, **kwargs)
 
     @action(detail=True, methods=["post"])
     def cancel(self, request, pk=None):

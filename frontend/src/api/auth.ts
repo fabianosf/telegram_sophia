@@ -5,3 +5,8 @@ export async function login(username: string, password: string): Promise<TokenPa
   const { data } = await client.post<TokenPair>("/auth/login/", { username, password });
   return data;
 }
+
+export async function register(username: string, password: string): Promise<TokenPair> {
+  const { data } = await client.post<TokenPair>("/auth/register/", { username, password });
+  return data;
+}

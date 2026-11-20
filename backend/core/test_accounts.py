@@ -220,3 +220,55 @@ class TelegramAccountAuthTests(APITestCase):
         response = self.client.delete(f"/api/accounts/{account.id}/")
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
         self.assertTrue(TelegramAccount.objects.filter(id=account.id).exists())
+
+    @patch("core.services.telegram_auth.build_client")
+    def test_start_reuses_error_account_same_phone(self, mock_build):
+        mock_build.return_value = _mock_client("TEMP_SESSION")
+        account = TelegramAccount.objects.create(
+            owner=self.alice,
+            label="Antiga",
+            phone="+5511999",
+            status=TelegramAccount.Status.ERROR,
+        )
+        response = self.client.post(
+            "/api/accounts/start/",
+            {"label": "Pessoal", "phone": "+5511999"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["id"], account.id)
+        self.assertEqual(
+            TelegramAccount.objects.filter(owner=self.alice, phone="+5511999").count(),
+            1,
+        )
+        account.refresh_from_db()
+        self.assertEqual(account.status, TelegramAccount.Status.PENDING)
+        self.assertEqual(account.label, "Pessoal")
+
+    @patch("core.services.telegram_auth.build_client")
+    def test_retry_resends_code_for_error_account(self, mock_build):
+        mock_build.return_value = _mock_client("TEMP_SESSION")
+        account = TelegramAccount.objects.create(
+            owner=self.alice,
+            label="Pessoal",
+            phone="+5511999",
+            status=TelegramAccount.Status.ERROR,
+        )
+        response = self.client.post(f"/api/accounts/{account.id}/retry/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["id"], account.id)
+        account.refresh_from_db()
+        self.assertEqual(account.status, TelegramAccount.Status.PENDING)
+        self.assertEqual(account.phone_code_hash, "hash-abc")
+
+    def test_retry_rejects_connected_account(self):
+        account = TelegramAccount.objects.create(
+            owner=self.alice,
+            label="Pessoal",
+            phone="+5511999",
+            status=TelegramAccount.Status.CONNECTED,
+        )
+        response = self.client.post(f"/api/accounts/{account.id}/retry/")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        account.refresh_from_db()
+        self.assertEqual(account.status, TelegramAccount.Status.CONNECTED)

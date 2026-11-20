@@ -236,7 +236,7 @@ th {
   padding: 2px 9px;
   font-size: 0.75rem;
   font-weight: 650;
-  text-transform: lowercase;
+  text-transform: none;
 }
 
 .badge.pending,

@@ -1,8 +1,15 @@
 import { type FormEvent, useState } from "react";
-import { confirmAccount, deleteAccount, listAccounts, startAccount } from "../api/accounts";
+import {
+  confirmAccount,
+  deleteAccount,
+  listAccounts,
+  retryAccount,
+  startAccount,
+} from "../api/accounts";
 import { ApiError } from "../api/errors";
 import { formatBrasilia } from "../datetime";
 import { usePolling } from "../hooks/usePolling";
+import { ACCOUNT_STATUS_LABEL } from "../status";
 import type { TelegramAccount } from "../types";
 
 interface FormState {
@@ -15,7 +22,7 @@ interface FormState {
 const EMPTY: FormState = { label: "", phone: "", code: "", password: "" };
 
 export default function Accounts() {
-  const { data: accounts, error, reload } = usePolling(listAccounts, 3000);
+  const { data: accounts, error, loading, reload } = usePolling(listAccounts, 3000);
   const [step, setStep] = useState<1 | 2>(1);
   const [pendingId, setPendingId] = useState<number | null>(null);
   const [form, setForm] = useState<FormState>(EMPTY);
@@ -140,6 +147,21 @@ export default function Accounts() {
     setBanner("");
   }
 
+  async function retry(account: TelegramAccount) {
+    setBanner("");
+    setBusy(true);
+    try {
+      const updated = await retryAccount(account.id);
+      continuePending(updated);
+      setBanner("Código reenviado. Confirme no Telegram.");
+      await reload();
+    } catch (err) {
+      applyApiError(err);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <>
       <section className="card">
@@ -226,7 +248,9 @@ export default function Accounts() {
       <section className="card">
         <h2>Contas</h2>
         {error ? <div className="banner">{error}</div> : null}
-        {accounts.length === 0 ? (
+        {loading ? (
+          <p className="empty">Carregando contas…</p>
+        ) : accounts.length === 0 ? (
           <p className="empty">Nenhuma conta ainda.</p>
         ) : (
           <div className="table-wrap">
@@ -246,14 +270,34 @@ export default function Accounts() {
                     <td>{account.label}</td>
                     <td>{account.phone}</td>
                     <td>
-                      <span className={`badge ${account.status}`}>{account.status}</span>
+                      <span className={`badge ${account.status}`}>
+                        {ACCOUNT_STATUS_LABEL[account.status]}
+                      </span>
                     </td>
                     <td>{formatBrasilia(account.created_at)}</td>
                     <td>
                       <div className="row-actions">
                         {account.status === "pending" ? (
-                          <button className="ghost" onClick={() => continuePending(account)}>
-                            Continuar
+                          <>
+                            <button className="ghost" onClick={() => continuePending(account)}>
+                              Continuar
+                            </button>
+                            <button
+                              className="ghost"
+                              disabled={busy}
+                              onClick={() => void retry(account)}
+                            >
+                              Reenviar código
+                            </button>
+                          </>
+                        ) : null}
+                        {account.status === "error" ? (
+                          <button
+                            className="ghost"
+                            disabled={busy}
+                            onClick={() => void retry(account)}
+                          >
+                            Tentar novamente
                           </button>
                         ) : null}
                         <button className="danger" onClick={() => remove(account)}>

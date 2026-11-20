@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from datetime import timedelta
+from pathlib import Path
 
 from asgiref.sync import sync_to_async
 from django.db import close_old_connections, transaction
@@ -38,6 +40,10 @@ SESSION_ERRORS = (
     SessionExpiredError,
     SessionRevokedError,
 )
+STUCK_GRACE = timedelta(seconds=60)
+HEARTBEAT_PATH = Path(
+    os.environ.get("WORKER_HEARTBEAT_PATH", "/tmp/sophia_worker_heartbeat")
+)
 
 
 class InvalidTelegramSession(Exception):
@@ -60,6 +66,40 @@ def default_client_factory(account: TelegramAccount):
         return build_client(decrypt(account.session_encrypted))
     except Exception as exc:
         raise InvalidTelegramSession(str(exc)) from exc
+
+
+def write_heartbeat() -> None:
+    HEARTBEAT_PATH.write_text(str(time.time()), encoding="utf-8")
+
+
+def deadline_queryset():
+    window = ExpressionWrapper(
+        F("max_window_seconds") * Value(timedelta(seconds=1)),
+        output_field=DurationField(),
+    )
+    deadline = ExpressionWrapper(F("run_at") + window, output_field=DateTimeField())
+    return Schedule.objects.annotate(deadline=deadline).filter(
+        status=Schedule.Status.RUNNING
+    )
+
+
+@sync_to_async
+def reap_stuck_schedules(*, recover_in_window: bool = False) -> tuple[int, int]:
+    now = timezone.now()
+    if recover_in_window:
+        failed = deadline_queryset().filter(deadline__lt=now).update(
+            status=Schedule.Status.FAILED
+        )
+        recovered = Schedule.objects.filter(status=Schedule.Status.RUNNING).update(
+            status=Schedule.Status.PENDING
+        )
+        close_old_connections()
+        return failed, recovered
+    failed = deadline_queryset().filter(deadline__lt=now - STUCK_GRACE).update(
+        status=Schedule.Status.FAILED
+    )
+    close_old_connections()
+    return failed, 0
 
 
 def due_queryset(now):
@@ -210,17 +250,23 @@ class WorkerEngine:
         self.pool.put(account.id, client)
         return client
 
-    async def tick(self, wait_tasks: bool = True) -> list[asyncio.Task]:
+    async def tick(
+        self, wait_tasks: bool = True, recover_stuck: bool = False
+    ) -> list[asyncio.Task]:
+        await reap_stuck_schedules(recover_in_window=recover_stuck)
         claimed = await claim_due_schedules()
         tasks = [asyncio.create_task(self.process(schedule)) for schedule in claimed]
         if wait_tasks and tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         await self.pool.reap()
         await sync_to_async(close_old_connections)()
+        await sync_to_async(write_heartbeat)()
         return tasks
 
     async def run_forever(self) -> None:
         pending: set[asyncio.Task] = set()
+        await reap_stuck_schedules(recover_in_window=True)
+        await sync_to_async(write_heartbeat)()
         try:
             while True:
                 tasks = await self.tick(wait_tasks=False)

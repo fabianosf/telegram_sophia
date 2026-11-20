@@ -2,6 +2,7 @@ const ACCESS_KEY = "ts_access";
 const REFRESH_KEY = "ts_refresh";
 
 export const AUTH_LOGOUT_EVENT = "ts:logout";
+export const SESSION_EXPIRED_KEY = "ts_session_expired";
 
 export function getAccessToken(): string | null {
   return localStorage.getItem(ACCESS_KEY);
@@ -23,5 +24,6 @@ export function clearTokens(): void {
 
 export function emitLogout(): void {
   clearTokens();
+  sessionStorage.setItem(SESSION_EXPIRED_KEY, "1");
   window.dispatchEvent(new Event(AUTH_LOGOUT_EVENT));
 }

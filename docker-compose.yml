@@ -33,7 +33,7 @@ services:
 
   api:
     <<: *backend
-    command: python manage.py runserver 0.0.0.0:8000
+    command: gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 2 --timeout 60
     ports:
       - "8000:8000"
     healthcheck:
@@ -57,15 +57,25 @@ services:
         condition: service_healthy
       api:
         condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import time, pathlib, sys; p=pathlib.Path('/tmp/sophia_worker_heartbeat'); sys.exit(0 if p.exists() and time.time()-float(p.read_text() or 0)<30 else 1)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   frontend:
     build:
       context: .
       dockerfile: Dockerfile.frontend
-    environment:
-      API_PROXY_TARGET: http://api:8000
     ports:
-      - "5173:5173"
+      - "5173:80"
     depends_on:
       api:
         condition: service_healthy

@@ -3,12 +3,12 @@ from datetime import timedelta
 from types import SimpleNamespace
 
 from django.contrib.auth import get_user_model
-from django.db import connections
+from django.db import close_old_connections, connections
 from django.test import TransactionTestCase
 from django.utils import timezone
 
 from core.models import Schedule, SendLog, TelegramAccount
-from worker.engine import WorkerEngine, claim_due_schedules
+from worker.engine import WorkerEngine, claim_due_schedules, reap_stuck_schedules
 
 User = get_user_model()
 
@@ -59,6 +59,7 @@ class WorkerEngineTests(TransactionTestCase):
         )
 
     def tearDown(self):
+        close_old_connections()
         connections.close_all()
 
     def _schedule(self, **kwargs):
@@ -124,3 +125,53 @@ class WorkerEngineTests(TransactionTestCase):
         future.refresh_from_db()
         self.assertEqual(future.status, Schedule.Status.PENDING)
         self.assertEqual(self.client.send_calls, 0)
+
+    def test_reaper_fails_expired_running(self):
+        schedule = self._schedule(
+            status=Schedule.Status.RUNNING,
+            run_at=timezone.now() - timedelta(minutes=5),
+            max_window_seconds=1,
+        )
+
+        async def run():
+            failed, recovered = await reap_stuck_schedules(recover_in_window=False)
+            return failed, recovered
+
+        failed, recovered = asyncio.run(run())
+        connections.close_all()
+        self.assertEqual(failed, 1)
+        self.assertEqual(recovered, 0)
+        schedule.refresh_from_db()
+        self.assertEqual(schedule.status, Schedule.Status.FAILED)
+
+    def test_reaper_recovers_running_still_in_window(self):
+        schedule = self._schedule(
+            status=Schedule.Status.RUNNING,
+            run_at=timezone.now() + timedelta(minutes=5),
+            max_window_seconds=15,
+        )
+
+        async def run():
+            return await reap_stuck_schedules(recover_in_window=True)
+
+        failed, recovered = asyncio.run(run())
+        connections.close_all()
+        self.assertEqual(failed, 0)
+        self.assertEqual(recovered, 1)
+        schedule.refresh_from_db()
+        self.assertEqual(schedule.status, Schedule.Status.PENDING)
+
+    def test_reaper_does_not_touch_live_running_during_tick(self):
+        schedule = self._schedule(
+            status=Schedule.Status.RUNNING,
+            run_at=timezone.now() + timedelta(minutes=5),
+            max_window_seconds=15,
+        )
+
+        async def run():
+            return await reap_stuck_schedules(recover_in_window=False)
+
+        asyncio.run(run())
+        connections.close_all()
+        schedule.refresh_from_db()
+        self.assertEqual(schedule.status, Schedule.Status.RUNNING)

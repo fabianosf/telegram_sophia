@@ -1,7 +1,11 @@
+from django.contrib.auth import get_user_model
+from django.contrib.auth.validators import UnicodeUsernameValidator
 from django.utils import timezone
 from rest_framework import serializers
 
 from core.models import Schedule, SendLog, TelegramAccount
+
+User = get_user_model()
 
 
 class TelegramAccountSerializer(serializers.ModelSerializer):
@@ -51,7 +55,29 @@ class ScheduleSerializer(serializers.ModelSerializer):
         request = self.context.get("request")
         if request and account.owner_id != request.user.id:
             raise serializers.ValidationError("Account not found.")
+        if account.status != TelegramAccount.Status.CONNECTED:
+            raise serializers.ValidationError("Account must be connected.")
         return account
+
+
+class RegisterSerializer(serializers.Serializer):
+    username = serializers.CharField(
+        max_length=150,
+        validators=[UnicodeUsernameValidator()],
+    )
+    password = serializers.CharField(write_only=True, min_length=8, max_length=128)
+
+    def validate_username(self, value: str) -> str:
+        username = value.strip()
+        if User.objects.filter(username__iexact=username).exists():
+            raise serializers.ValidationError("Username already taken.")
+        return username
+
+    def create(self, validated_data):
+        return User.objects.create_user(
+            username=validated_data["username"],
+            password=validated_data["password"],
+        )
 
 
 class SendLogSerializer(serializers.ModelSerializer):

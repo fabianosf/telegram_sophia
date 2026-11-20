@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 export function usePolling<T>(loader: () => Promise<T[]>, intervalMs: number) {
   const [data, setData] = useState<T[]>([]);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
 
   const reload = useCallback(async () => {
     try {
@@ -10,6 +11,8 @@ export function usePolling<T>(loader: () => Promise<T[]>, intervalMs: number) {
       setError("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Falha ao carregar.");
+    } finally {
+      setLoading(false);
     }
   }, [loader]);
 
@@ -21,5 +24,5 @@ export function usePolling<T>(loader: () => Promise<T[]>, intervalMs: number) {
     return () => window.clearInterval(id);
   }, [intervalMs, reload]);
 
-  return { data, error, reload, setData };
+  return { data, error, loading, reload, setData };
 }

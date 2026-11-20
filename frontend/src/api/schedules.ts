@@ -19,6 +19,22 @@ export async function createSchedule(payload: {
   return data;
 }
 
+export async function updateSchedule(
+  id: number,
+  payload: {
+    account: number;
+    chat_ref: string;
+    message: string;
+    run_at: string;
+    lead_seconds: number;
+    max_window_seconds: number;
+    retry_interval_ms: number;
+  }
+): Promise<Schedule> {
+  const { data } = await client.patch<Schedule>(`/schedules/${id}/`, payload);
+  return data;
+}
+
 export async function cancelSchedule(id: number): Promise<Schedule> {
   const { data } = await client.post<Schedule>(`/schedules/${id}/cancel/`);
   return data;

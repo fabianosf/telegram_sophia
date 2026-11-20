@@ -24,7 +24,7 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         engine = WorkerEngine(idle_seconds=options["idle_seconds"])
         if options["once"]:
-            asyncio.run(engine.tick(wait_tasks=True))
+            asyncio.run(engine.tick(wait_tasks=True, recover_stuck=True))
             self.stdout.write(self.style.SUCCESS("Worker tick finished."))
             return
         self.stdout.write(self.style.SUCCESS("Worker started."))

@@ -17,7 +17,12 @@ const refreshClient = axios.create({
 let refreshPromise: Promise<string | null> | null = null;
 
 function isAuthUrl(url?: string): boolean {
-  return Boolean(url && (url.includes("/auth/login") || url.includes("/auth/refresh")));
+  return Boolean(
+    url &&
+      (url.includes("/auth/login") ||
+        url.includes("/auth/refresh") ||
+        url.includes("/auth/register"))
+  );
 }
 
 async function refreshAccess(): Promise<string | null> {

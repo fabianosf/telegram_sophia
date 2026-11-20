@@ -22,6 +22,11 @@ export async function confirmAccount(
   return data;
 }
 
+export async function retryAccount(id: number): Promise<TelegramAccount> {
+  const { data } = await client.post<TelegramAccount>(`/accounts/${id}/retry/`);
+  return data;
+}
+
 export async function deleteAccount(id: number): Promise<void> {
   await client.delete(`/accounts/${id}/`);
 }

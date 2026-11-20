@@ -24,6 +24,39 @@ class ApiAuthTests(APITestCase):
         self.assertIn("access", response.data)
         self.assertIn("refresh", response.data)
 
+    def test_register_returns_jwt(self):
+        response = self.client.post(
+            "/api/auth/register/",
+            {"username": "nova", "password": "Str0ngPass!x"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIn("access", response.data)
+        self.assertIn("refresh", response.data)
+        self.assertTrue(User.objects.filter(username="nova").exists())
+
+    def test_register_rejects_duplicate_username(self):
+        response = self.client.post(
+            "/api/auth/register/",
+            {"username": "alice", "password": "Str0ngPass!x"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_register_rejects_short_password(self):
+        response = self.client.post(
+            "/api/auth/register/",
+            {"username": "nova", "password": "short"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_health_reports_database(self):
+        response = self.client.get("/api/health/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["status"], "ok")
+        self.assertEqual(response.data["database"], "ok")
+
     def test_refresh_returns_access(self):
         login = self.client.post(
             "/api/auth/login/",
@@ -127,7 +160,10 @@ class ScheduleValidationTests(APITestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="alice", password="secret123")
         self.account = TelegramAccount.objects.create(
-            owner=self.user, label="Alice", phone="+5511"
+            owner=self.user,
+            label="Alice",
+            phone="+5511",
+            status=TelegramAccount.Status.CONNECTED,
         )
         login = self.client.post(
             "/api/auth/login/",
@@ -208,3 +244,97 @@ class ScheduleValidationTests(APITestCase):
         self.assertEqual(bad.status_code, status.HTTP_400_BAD_REQUEST)
         sent.refresh_from_db()
         self.assertEqual(sent.status, Schedule.Status.SENT)
+
+    def test_create_requires_connected_account(self):
+        pending = TelegramAccount.objects.create(
+            owner=self.user,
+            label="Pendente",
+            phone="+5511998",
+            status=TelegramAccount.Status.PENDING,
+        )
+        response = self.client.post(
+            "/api/schedules/",
+            self._payload(account=pending.id),
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("account", response.data)
+
+    def test_cannot_patch_or_delete_non_pending_schedule(self):
+        sent = Schedule.objects.create(
+            account=self.account,
+            chat_ref="@chat",
+            message="done",
+            run_at=timezone.now() + timedelta(hours=1),
+            status=Schedule.Status.SENT,
+        )
+        patch = self.client.patch(
+            f"/api/schedules/{sent.id}/",
+            {"message": "alterado"},
+            format="json",
+        )
+        delete = self.client.delete(f"/api/schedules/{sent.id}/")
+        self.assertEqual(patch.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(delete.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertTrue(Schedule.objects.filter(id=sent.id).exists())
+        sent.refresh_from_db()
+        self.assertEqual(sent.message, "done")
+
+    def test_can_patch_and_delete_pending_schedule(self):
+        pending = Schedule.objects.create(
+            account=self.account,
+            chat_ref="@chat",
+            message="ok",
+            run_at=timezone.now() + timedelta(hours=1),
+        )
+        patch = self.client.patch(
+            f"/api/schedules/{pending.id}/",
+            {"message": "atualizado"},
+            format="json",
+        )
+        self.assertEqual(patch.status_code, status.HTTP_200_OK)
+        pending.refresh_from_db()
+        self.assertEqual(pending.message, "atualizado")
+
+        delete = self.client.delete(f"/api/schedules/{pending.id}/")
+        self.assertEqual(delete.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Schedule.objects.filter(id=pending.id).exists())
+
+
+class BootSecretsTests(APITestCase):
+    def test_missing_secrets_fail_validation(self):
+        from django.core.exceptions import ImproperlyConfigured
+        from django.test import override_settings
+
+        from core.boot import validate_runtime_secrets
+
+        with override_settings(FERNET_KEY="", TELEGRAM_API_ID="1", TELEGRAM_API_HASH="hash"):
+            with self.assertRaises(ImproperlyConfigured):
+                validate_runtime_secrets()
+
+    def test_invalid_fernet_key_fails_validation(self):
+        from django.core.exceptions import ImproperlyConfigured
+        from django.test import override_settings
+
+        from core.boot import validate_runtime_secrets
+
+        with override_settings(
+            FERNET_KEY="not-a-fernet-key",
+            TELEGRAM_API_ID="1",
+            TELEGRAM_API_HASH="hash",
+        ):
+            with self.assertRaises(ImproperlyConfigured):
+                validate_runtime_secrets()
+
+    def test_valid_secrets_pass(self):
+        from cryptography.fernet import Fernet
+        from django.test import override_settings
+
+        from core.boot import validate_runtime_secrets
+
+        with override_settings(
+            FERNET_KEY=Fernet.generate_key().decode(),
+            TELEGRAM_API_ID="12345",
+            TELEGRAM_API_HASH="hash",
+        ):
+            validate_runtime_secrets()

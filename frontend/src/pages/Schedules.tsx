@@ -1,9 +1,16 @@
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { listAccounts } from "../api/accounts";
 import { ApiError } from "../api/errors";
-import { cancelSchedule, createSchedule, listSchedules, listSendLogs } from "../api/schedules";
+import {
+  cancelSchedule,
+  createSchedule,
+  listSchedules,
+  listSendLogs,
+  updateSchedule,
+} from "../api/schedules";
 import { brasiliaLocalToISO, formatBrasilia, toBrasiliaDateTimeLocal } from "../datetime";
 import { usePolling } from "../hooks/usePolling";
+import { SCHEDULE_STATUS_LABEL } from "../status";
 import type { Schedule, SendLog } from "../types";
 
 interface FormState {
@@ -29,8 +36,8 @@ function emptyForm(): FormState {
 }
 
 export default function Schedules() {
-  const { data: schedules, error, reload } = usePolling(listSchedules, 3000);
-  const { data: accounts } = usePolling(listAccounts, 3000);
+  const { data: schedules, error, loading, reload } = usePolling(listSchedules, 3000);
+  const { data: accounts, loading: loadingAccounts } = usePolling(listAccounts, 3000);
   const connected = accounts.filter((item) => item.status === "connected");
   const accountMap = useMemo(
     () => Object.fromEntries(accounts.map((item) => [item.id, item])),
@@ -42,6 +49,17 @@ export default function Schedules() {
   const [banner, setBanner] = useState("");
   const [busy, setBusy] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [editingId, setEditingId] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (loading) return;
+    if (selectedId && !schedules.some((item) => item.id === selectedId)) {
+      setSelectedId(null);
+    }
+    if (editingId && !schedules.some((item) => item.id === editingId && item.status === "pending")) {
+      setEditingId(null);
+    }
+  }, [schedules, selectedId, editingId, loading]);
 
   function setField(name: keyof FormState, value: string) {
     setForm((current) => ({ ...current, [name]: value }));
@@ -79,7 +97,7 @@ export default function Schedules() {
     if (!validate()) return;
     setBusy(true);
     try {
-      await createSchedule({
+      const payload = {
         account: Number(form.account),
         chat_ref: form.chat_ref.trim(),
         message: form.message,
@@ -87,8 +105,15 @@ export default function Schedules() {
         lead_seconds: Number(form.lead_seconds),
         max_window_seconds: Number(form.max_window_seconds),
         retry_interval_ms: Number(form.retry_interval_ms),
-      });
-      setBanner("Agendamento criado.");
+      };
+      if (editingId) {
+        await updateSchedule(editingId, payload);
+        setBanner("Agendamento atualizado.");
+        setEditingId(null);
+      } else {
+        await createSchedule(payload);
+        setBanner("Agendamento criado.");
+      }
       setForm({ ...emptyForm(), account: form.account });
       await reload();
     } catch (err) {
@@ -109,6 +134,21 @@ export default function Schedules() {
     }
   }
 
+  function startEdit(schedule: Schedule) {
+    setEditingId(schedule.id);
+    setSelectedId(null);
+    setBanner("");
+    setForm({
+      account: String(schedule.account),
+      chat_ref: schedule.chat_ref,
+      message: schedule.message,
+      run_at: toBrasiliaDateTimeLocal(new Date(schedule.run_at)),
+      lead_seconds: String(schedule.lead_seconds),
+      max_window_seconds: String(schedule.max_window_seconds),
+      retry_interval_ms: String(schedule.retry_interval_ms),
+    });
+  }
+
   async function onCancel(schedule: Schedule) {
     setBanner("");
     try {
@@ -122,11 +162,17 @@ export default function Schedules() {
   return (
     <>
       <section className="card">
-        <h2>Novo agendamento</h2>
+        <h2>{editingId ? "Editar agendamento" : "Novo agendamento"}</h2>
         {banner ? (
-          <div className={`banner ${banner.includes("criado") ? "ok" : ""}`}>{banner}</div>
+          <div
+            className={`banner ${banner.includes("criado") || banner.includes("atualizado") ? "ok" : ""}`}
+          >
+            {banner}
+          </div>
         ) : null}
-        {connected.length === 0 ? (
+        {loadingAccounts ? (
+          <p className="empty">Carregando contas…</p>
+        ) : connected.length === 0 ? (
           <p className="empty">Conecte uma conta Telegram antes de agendar.</p>
         ) : null}
         <form className="grid" onSubmit={submit}>
@@ -228,8 +274,20 @@ export default function Schedules() {
           </div>
           <div className="row-actions">
             <button className="primary" disabled={busy || connected.length === 0}>
-              {busy ? "Salvando…" : "Agendar"}
+              {busy ? "Salvando…" : editingId ? "Salvar alterações" : "Agendar"}
             </button>
+            {editingId ? (
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => {
+                  setEditingId(null);
+                  setForm({ ...emptyForm(), account: form.account });
+                }}
+              >
+                Cancelar edição
+              </button>
+            ) : null}
           </div>
         </form>
       </section>
@@ -238,7 +296,9 @@ export default function Schedules() {
         <h2>Agendamentos</h2>
         <p className="muted">Status atualizado a cada 3 segundos. Horários em Brasília.</p>
         {error ? <div className="banner">{error}</div> : null}
-        {schedules.length === 0 ? (
+        {loading ? (
+          <p className="empty">Carregando agendamentos…</p>
+        ) : schedules.length === 0 ? (
           <p className="empty">Nenhum agendamento.</p>
         ) : (
           <div className="table-wrap">
@@ -265,7 +325,9 @@ export default function Schedules() {
                       <td>{account ? account.label : `#${schedule.account}`}</td>
                       <td>{schedule.chat_ref}</td>
                       <td>
-                        <span className={`badge ${schedule.status}`}>{schedule.status}</span>
+                        <span className={`badge ${schedule.status}`}>
+                          {SCHEDULE_STATUS_LABEL[schedule.status]}
+                        </span>
                       </td>
                       <td>
                         <div className="row-actions">
@@ -279,15 +341,26 @@ export default function Schedules() {
                             Detalhes
                           </button>
                           {schedule.status === "pending" ? (
-                            <button
-                              className="danger"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                void onCancel(schedule);
-                              }}
-                            >
-                              Cancelar
-                            </button>
+                            <>
+                              <button
+                                className="ghost"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  startEdit(schedule);
+                                }}
+                              >
+                                Editar
+                              </button>
+                              <button
+                                className="danger"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void onCancel(schedule);
+                                }}
+                              >
+                                Cancelar
+                              </button>
+                            </>
                           ) : null}
                         </div>
                       </td>
