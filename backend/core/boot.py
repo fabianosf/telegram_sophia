@@ -25,17 +25,8 @@ def should_validate_on_startup() -> bool:
 
 
 def validate_runtime_secrets() -> None:
-    missing: list[str] = []
     if not settings.FERNET_KEY:
-        missing.append("FERNET_KEY")
-    if not settings.TELEGRAM_API_ID:
-        missing.append("TELEGRAM_API_ID")
-    if not settings.TELEGRAM_API_HASH:
-        missing.append("TELEGRAM_API_HASH")
-    if missing:
-        raise ImproperlyConfigured(
-            "Missing required environment variables: " + ", ".join(missing)
-        )
+        raise ImproperlyConfigured("Missing required environment variables: FERNET_KEY")
 
     key = settings.FERNET_KEY
     try:
@@ -43,7 +34,14 @@ def validate_runtime_secrets() -> None:
     except Exception as exc:
         raise ImproperlyConfigured("FERNET_KEY is not a valid Fernet key.") from exc
 
-    try:
-        int(settings.TELEGRAM_API_ID)
-    except (TypeError, ValueError) as exc:
-        raise ImproperlyConfigured("TELEGRAM_API_ID must be an integer.") from exc
+    api_id = settings.TELEGRAM_API_ID
+    api_hash = settings.TELEGRAM_API_HASH
+    if api_id or api_hash:
+        if not api_id or not api_hash:
+            raise ImproperlyConfigured(
+                "TELEGRAM_API_ID and TELEGRAM_API_HASH must both be set, or both empty."
+            )
+        try:
+            int(api_id)
+        except (TypeError, ValueError) as exc:
+            raise ImproperlyConfigured("TELEGRAM_API_ID must be an integer.") from exc

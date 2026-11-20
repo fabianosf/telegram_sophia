@@ -1,4 +1,5 @@
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   confirmAccount,
   deleteAccount,
@@ -9,8 +10,9 @@ import {
 import { ApiError } from "../api/errors";
 import { formatBrasilia } from "../datetime";
 import { usePolling } from "../hooks/usePolling";
+import { getTelegramApp } from "../api/telegramApp";
 import { ACCOUNT_STATUS_LABEL } from "../status";
-import type { TelegramAccount } from "../types";
+import type { TelegramAccount, TelegramAppConfig } from "../types";
 
 interface FormState {
   label: string;
@@ -30,6 +32,23 @@ export default function Accounts() {
   const [banner, setBanner] = useState("");
   const [need2fa, setNeed2fa] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [telegramApp, setTelegramApp] = useState<TelegramAppConfig | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getTelegramApp()
+      .then((data) => {
+        if (!cancelled) setTelegramApp(data);
+      })
+      .catch(() => {
+        if (!cancelled) setTelegramApp(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const appReady = Boolean(telegramApp?.configured);
 
   function setField(name: keyof FormState, value: string) {
     setForm((current) => ({ ...current, [name]: value }));
@@ -70,6 +89,10 @@ export default function Accounts() {
   async function submitStart(event: FormEvent) {
     event.preventDefault();
     setBanner("");
+    if (!appReady) {
+      setBanner("Configure seu app Telegram em Configuração.");
+      return;
+    }
     if (!validateStart()) return;
     setBusy(true);
     try {
@@ -174,6 +197,12 @@ export default function Accounts() {
         {banner ? (
           <div className={`banner ${banner.includes("conectada") ? "ok" : ""}`}>{banner}</div>
         ) : null}
+        {telegramApp && !appReady ? (
+          <div className="banner">
+            Configure seu app Telegram (api_id e api_hash) antes de vincular o telefone.{" "}
+            <Link to="/configuracao">Abrir Configuração</Link>
+          </div>
+        ) : null}
         {step === 1 ? (
           <form className="grid two" onSubmit={submitStart}>
             <label>
@@ -197,7 +226,7 @@ export default function Accounts() {
               {fieldErrors.phone ? <span className="field-error">{fieldErrors.phone}</span> : null}
             </label>
             <div className="row-actions">
-              <button className="primary" disabled={busy}>
+              <button className="primary" disabled={busy || !appReady}>
                 {busy ? "Enviando código…" : "Enviar código"}
               </button>
             </div>

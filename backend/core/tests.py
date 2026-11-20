@@ -334,7 +334,7 @@ class BootSecretsTests(APITestCase):
 
         with override_settings(
             FERNET_KEY=Fernet.generate_key().decode(),
-            TELEGRAM_API_ID="12345",
-            TELEGRAM_API_HASH="hash",
+            TELEGRAM_API_ID="",
+            TELEGRAM_API_HASH="",
         ):
             validate_runtime_secrets()

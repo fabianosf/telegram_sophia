@@ -9,7 +9,7 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 
-from core.models import Schedule, SendLog, TelegramAccount
+from core.models import Schedule, SendLog, TelegramAccount, TelegramApp
 from core.serializers import (
     AccountConfirmSerializer,
     AccountStartSerializer,
@@ -17,8 +17,17 @@ from core.serializers import (
     ScheduleSerializer,
     SendLogSerializer,
     TelegramAccountSerializer,
+    TelegramAppWriteSerializer,
 )
-from core.services.telegram_auth import TelegramAuthError, confirm_login, disconnect_session, send_login_code
+from core.services.telegram_auth import (
+    TelegramAuthError,
+    confirm_login,
+    credentials_for_user,
+    disconnect_session,
+    env_credentials,
+    mask_api_hash,
+    send_login_code,
+)
 from core.throttles import AccountStartRateThrottle, LoginRateThrottle, RegisterRateThrottle
 from core.utils.crypto import decrypt, encrypt
 
@@ -64,6 +73,55 @@ class RegisterView(APIView):
         )
 
 
+class TelegramAppView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        app = TelegramApp.objects.filter(owner=request.user).first()
+        if app:
+            api_hash = decrypt(app.api_hash_encrypted)
+            return Response(
+                {
+                    "configured": True,
+                    "has_own_app": True,
+                    "using_server_fallback": False,
+                    "api_id": app.api_id,
+                    "api_hash_masked": mask_api_hash(api_hash),
+                }
+            )
+        env = env_credentials()
+        return Response(
+            {
+                "configured": bool(env),
+                "has_own_app": False,
+                "using_server_fallback": bool(env),
+                "api_id": None,
+                "api_hash_masked": "",
+            }
+        )
+
+    def put(self, request):
+        serializer = TelegramAppWriteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        api_hash = serializer.validated_data["api_hash"]
+        TelegramApp.objects.update_or_create(
+            owner=request.user,
+            defaults={
+                "api_id": serializer.validated_data["api_id"],
+                "api_hash_encrypted": encrypt(api_hash),
+            },
+        )
+        return Response(
+            {
+                "configured": True,
+                "has_own_app": True,
+                "using_server_fallback": False,
+                "api_id": serializer.validated_data["api_id"],
+                "api_hash_masked": mask_api_hash(api_hash),
+            }
+        )
+
+
 class TelegramAccountViewSet(
     mixins.ListModelMixin,
     mixins.RetrieveModelMixin,
@@ -84,10 +142,16 @@ class TelegramAccountViewSet(
     def _auth_error_response(self, exc: TelegramAuthError) -> Response:
         return Response({"detail": exc.detail}, status=exc.status_code)
 
+    def _telegram_creds(self, user) -> tuple[int, str]:
+        return credentials_for_user(user)
+
     def _send_login_code(self, account: TelegramAccount) -> Response | None:
         try:
+            api_id, api_hash = self._telegram_creds(account.owner)
             phone_code_hash, session_string = async_to_sync(send_login_code)(
-                account.phone
+                account.phone,
+                api_id=api_id,
+                api_hash=api_hash,
             )
         except TelegramAuthError as exc:
             account.status = TelegramAccount.Status.ERROR
@@ -104,6 +168,10 @@ class TelegramAccountViewSet(
     def start(self, request):
         serializer = AccountStartSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        try:
+            self._telegram_creds(request.user)
+        except TelegramAuthError as exc:
+            return self._auth_error_response(exc)
         label = serializer.validated_data["label"]
         phone = serializer.validated_data["phone"]
         account = (
@@ -169,12 +237,15 @@ class TelegramAccountViewSet(
                 status=status.HTTP_400_BAD_REQUEST,
             )
         try:
+            api_id, api_hash = self._telegram_creds(account.owner)
             session_string = async_to_sync(confirm_login)(
                 account.phone,
                 decrypt(account.session_encrypted),
                 account.phone_code_hash,
                 serializer.validated_data["code"],
                 serializer.validated_data.get("password") or None,
+                api_id=api_id,
+                api_hash=api_hash,
             )
         except TelegramAuthError as exc:
             return self._auth_error_response(exc)
@@ -194,7 +265,10 @@ class TelegramAccountViewSet(
             except Exception:
                 session_string = ""
         try:
-            async_to_sync(disconnect_session)(session_string)
+            api_id, api_hash = self._telegram_creds(account.owner)
+            async_to_sync(disconnect_session)(
+                session_string, api_id=api_id, api_hash=api_hash
+            )
         except TelegramAuthError as exc:
             return self._auth_error_response(exc)
         account.delete()

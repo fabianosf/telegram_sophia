@@ -7,7 +7,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 from telethon.errors import PhoneCodeInvalidError, SessionPasswordNeededError
 
-from core.models import TelegramAccount
+from core.models import TelegramAccount, TelegramApp
 from core.utils.crypto import decrypt, encrypt
 
 User = get_user_model()
@@ -272,3 +272,68 @@ class TelegramAccountAuthTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         account.refresh_from_db()
         self.assertEqual(account.status, TelegramAccount.Status.CONNECTED)
+
+
+@override_settings(TELEGRAM_API_ID="", TELEGRAM_API_HASH="")
+class TelegramAppConfigTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="alice", password="secret123")
+        login = self.client.post(
+            "/api/auth/login/",
+            {"username": "alice", "password": "secret123"},
+            format="json",
+        )
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {login.data['access']}")
+
+    def test_get_unconfigured_without_env(self):
+        response = self.client.get("/api/telegram-app/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data["configured"])
+        self.assertFalse(response.data["has_own_app"])
+
+    def test_put_saves_and_masks_hash(self):
+        response = self.client.put(
+            "/api/telegram-app/",
+            {"api_id": 30396601, "api_hash": "d41cee75e1b994ebc82a09726255a303"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["has_own_app"])
+        self.assertEqual(response.data["api_id"], 30396601)
+        self.assertNotIn("d41cee75e1b994ebc82a09726255a303", str(response.data))
+        self.assertTrue(response.data["api_hash_masked"].startswith("d41c"))
+        app = TelegramApp.objects.get(owner=self.user)
+        self.assertEqual(
+            decrypt(app.api_hash_encrypted), "d41cee75e1b994ebc82a09726255a303"
+        )
+
+    @patch("core.services.telegram_auth.build_client")
+    def test_start_without_credentials_fails(self, mock_build):
+        response = self.client.post(
+            "/api/accounts/start/",
+            {"label": "Pessoal", "phone": "+5511999"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Configuração", response.data["detail"])
+        mock_build.assert_not_called()
+        self.assertFalse(TelegramAccount.objects.filter(owner=self.user).exists())
+
+    @patch("core.services.telegram_auth.build_client")
+    def test_start_uses_user_telegram_app(self, mock_build):
+        mock_build.return_value = _mock_client("TEMP_SESSION")
+        TelegramApp.objects.create(
+            owner=self.user,
+            api_id=111,
+            api_hash_encrypted=encrypt("user-hash-value"),
+        )
+        response = self.client.post(
+            "/api/accounts/start/",
+            {"label": "Pessoal", "phone": "+5511999"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        mock_build.assert_called()
+        kwargs = mock_build.call_args.kwargs
+        self.assertEqual(kwargs.get("api_id"), 111)
+        self.assertEqual(kwargs.get("api_hash"), "user-hash-value")

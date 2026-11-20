@@ -35,3 +35,11 @@ export interface TokenPair {
   access: string;
   refresh: string;
 }
+
+export interface TelegramAppConfig {
+  configured: boolean;
+  has_own_app: boolean;
+  using_server_fallback: boolean;
+  api_id: number | null;
+  api_hash_masked: string;
+}

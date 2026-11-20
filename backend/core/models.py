@@ -2,6 +2,20 @@ from django.conf import settings
 from django.db import models
 
 
+class TelegramApp(models.Model):
+    owner = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="telegram_app",
+    )
+    api_id = models.PositiveIntegerField()
+    api_hash_encrypted = models.TextField()
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self) -> str:
+        return f"Telegram app of {self.owner}"
+
+
 class TelegramAccount(models.Model):
     class Status(models.TextChoices):
         PENDING = "pending", "Pending"

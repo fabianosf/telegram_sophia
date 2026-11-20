@@ -23,6 +23,12 @@ export default function Layout() {
             >
               Agendamentos
             </NavLink>
+            <NavLink
+              to="/configuracao"
+              className={({ isActive }) => (isActive ? "active" : "")}
+            >
+              Configuração
+            </NavLink>
           </nav>
           <button className="ghost" type="button" onClick={logout}>
             Sair

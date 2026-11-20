@@ -23,21 +23,59 @@ class TwoFactorRequired(TelegramAuthError):
         super().__init__("Two-factor password required.", 400)
 
 
-def _credentials() -> tuple[int, str]:
+def env_credentials() -> tuple[int, str] | None:
     api_id = settings.TELEGRAM_API_ID
     api_hash = settings.TELEGRAM_API_HASH
     if not api_id or not api_hash:
-        raise TelegramAuthError("Telegram API credentials are not configured.", 503)
-    return int(api_id), api_hash
+        return None
+    return int(api_id), str(api_hash)
 
 
-def build_client(session_string: str = "") -> TelegramClient:
-    api_id, api_hash = _credentials()
-    return TelegramClient(StringSession(session_string or ""), api_id, api_hash)
+def mask_api_hash(value: str) -> str:
+    if len(value) <= 8:
+        return "•" * len(value)
+    return f"{value[:4]}{'•' * (len(value) - 8)}{value[-4:]}"
 
 
-async def send_login_code(phone: str, session_string: str = "") -> tuple[str, str]:
-    client = build_client(session_string)
+def credentials_for_user(user) -> tuple[int, str]:
+    from core.models import TelegramApp
+    from core.utils.crypto import decrypt
+
+    app = TelegramApp.objects.filter(owner_id=user.pk).first()
+    if app and app.api_hash_encrypted:
+        return app.api_id, decrypt(app.api_hash_encrypted)
+    env = env_credentials()
+    if env:
+        return env
+    raise TelegramAuthError(
+        "Configure seu app Telegram em Configuração (api_id e api_hash).",
+        400,
+    )
+
+
+def build_client(
+    session_string: str = "",
+    api_id: int | None = None,
+    api_hash: str | None = None,
+) -> TelegramClient:
+    if api_id is None or not api_hash:
+        creds = env_credentials()
+        if not creds:
+            raise TelegramAuthError(
+                "Configure seu app Telegram em Configuração (api_id e api_hash).",
+                400,
+            )
+        api_id, api_hash = creds
+    return TelegramClient(StringSession(session_string or ""), int(api_id), api_hash)
+
+
+async def send_login_code(
+    phone: str,
+    session_string: str = "",
+    api_id: int | None = None,
+    api_hash: str | None = None,
+) -> tuple[str, str]:
+    client = build_client(session_string, api_id=api_id, api_hash=api_hash)
     await client.connect()
     try:
         try:
@@ -57,8 +95,10 @@ async def confirm_login(
     phone_code_hash: str,
     code: str,
     password: str | None = None,
+    api_id: int | None = None,
+    api_hash: str | None = None,
 ) -> str:
-    client = build_client(session_string)
+    client = build_client(session_string, api_id=api_id, api_hash=api_hash)
     await client.connect()
     try:
         try:
@@ -83,10 +123,14 @@ async def confirm_login(
         await client.disconnect()
 
 
-async def disconnect_session(session_string: str) -> None:
+async def disconnect_session(
+    session_string: str,
+    api_id: int | None = None,
+    api_hash: str | None = None,
+) -> None:
     if not session_string:
         return
-    client = build_client(session_string)
+    client = build_client(session_string, api_id=api_id, api_hash=api_hash)
     await client.connect()
     try:
         if await client.is_user_authorized():

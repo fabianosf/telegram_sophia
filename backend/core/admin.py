@@ -1,6 +1,14 @@
 from django.contrib import admin
 
-from core.models import Schedule, SendLog, TelegramAccount
+from core.models import Schedule, SendLog, TelegramAccount, TelegramApp
+
+
+@admin.register(TelegramApp)
+class TelegramAppAdmin(admin.ModelAdmin):
+    list_display = ("id", "owner", "api_id", "updated_at")
+    search_fields = ("owner__username",)
+    readonly_fields = ("updated_at",)
+    exclude = ("api_hash_encrypted",)
 
 
 @admin.register(TelegramAccount)

@@ -13,6 +13,8 @@ const FIELD_LABELS: Record<string, string> = {
   lead_seconds: "Antecedência",
   max_window_seconds: "Janela",
   retry_interval_ms: "Intervalo",
+  api_id: "App api_id",
+  api_hash: "App api_hash",
   detail: "Erro",
   non_field_errors: "Erro",
 };

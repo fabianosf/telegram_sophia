@@ -15,6 +15,14 @@ class TelegramAccountSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class TelegramAppWriteSerializer(serializers.Serializer):
+    api_id = serializers.IntegerField(min_value=1)
+    api_hash = serializers.CharField(min_length=8, max_length=128)
+
+    def validate_api_hash(self, value: str) -> str:
+        return value.strip()
+
+
 class AccountStartSerializer(serializers.Serializer):
     label = serializers.CharField(max_length=100)
     phone = serializers.CharField(max_length=32)

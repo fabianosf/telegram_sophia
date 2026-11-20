@@ -8,7 +8,12 @@ import {
   listSendLogs,
   updateSchedule,
 } from "../api/schedules";
-import { brasiliaLocalToISO, formatBrasilia, toBrasiliaDateTimeLocal } from "../datetime";
+import {
+  brasiliaLocalToISO,
+  describeRunAt,
+  formatBrasilia,
+  toBrasiliaDateTimeLocal,
+} from "../datetime";
 import { usePolling } from "../hooks/usePolling";
 import { SCHEDULE_STATUS_LABEL } from "../status";
 import type { Schedule, SendLog } from "../types";
@@ -28,7 +33,7 @@ function emptyForm(): FormState {
     account: "",
     chat_ref: "",
     message: "",
-    run_at: toBrasiliaDateTimeLocal(new Date(), 10 * 60 * 1000),
+    run_at: toBrasiliaDateTimeLocal(new Date(), 2 * 60 * 1000),
     lead_seconds: "5",
     max_window_seconds: "15",
     retry_interval_ms: "200",
@@ -50,6 +55,12 @@ export default function Schedules() {
   const [busy, setBusy] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [nowTick, setNowTick] = useState(0);
+
+  useEffect(() => {
+    const id = window.setInterval(() => setNowTick((tick) => tick + 1), 1000);
+    return () => window.clearInterval(id);
+  }, []);
 
   useEffect(() => {
     if (loading) return;
@@ -71,7 +82,7 @@ export default function Schedules() {
     if (!form.account) next.account = "Escolha uma conta conectada.";
     if (!form.chat_ref.trim()) next.chat_ref = "Informe @username, link ou id.";
     if (!form.message.trim()) next.message = "Escreva a mensagem.";
-    if (!form.run_at) next.run_at = "Informe data e hora (Brasília).";
+    if (!form.run_at) next.run_at = "Informe quando a mensagem deve chegar."
     else if (new Date(brasiliaLocalToISO(form.run_at)).getTime() <= Date.now()) {
       next.run_at = "A data/hora precisa ser no futuro (Brasília).";
     }
@@ -196,13 +207,27 @@ export default function Schedules() {
               ) : null}
             </label>
             <label>
-              Chat (@username, link ou id)
+              Para quem enviar
               <input
                 className={fieldErrors.chat_ref ? "invalid" : ""}
                 value={form.chat_ref}
                 onChange={(e) => setField("chat_ref", e.target.value)}
-                placeholder="@canal ou -100…"
+                placeholder="@usuario, link, id ou Mensagens Salvas"
               />
+              <div className="quick-times" style={{ marginTop: 8 }}>
+                <button type="button" onClick={() => setField("chat_ref", "me")}>
+                  Mensagens Salvas (eu)
+                </button>
+              </div>
+              {form.chat_ref.trim().toLowerCase() === "me" ||
+              form.chat_ref.trim().toLowerCase() === "eu" ? (
+                <span className="muted">Vai aparecer em Mensagens Salvas no Telegram.</span>
+              ) : (
+                <span className="muted">
+                  Use o @ da pessoa ou do grupo no Telegram. Se for você mesmo, clique em
+                  Mensagens Salvas.
+                </span>
+              )}
               {fieldErrors.chat_ref ? (
                 <span className="field-error">{fieldErrors.chat_ref}</span>
               ) : null}
@@ -217,60 +242,80 @@ export default function Schedules() {
             />
             {fieldErrors.message ? <span className="field-error">{fieldErrors.message}</span> : null}
           </label>
-          <div className="grid two">
+          <div className="when-block">
             <label>
-              Data/hora (Brasília)
+              Quando a mensagem chega (Brasília)
               <input
                 type="datetime-local"
+                step="1"
                 className={fieldErrors.run_at ? "invalid" : ""}
                 value={form.run_at}
                 onChange={(e) => setField("run_at", e.target.value)}
               />
               {fieldErrors.run_at ? <span className="field-error">{fieldErrors.run_at}</span> : null}
             </label>
-            <div className="grid three">
-              <label>
-                Antecedência (s)
-                <input
-                  type="number"
-                  min="0"
-                  max="30"
-                  className={fieldErrors.lead_seconds ? "invalid" : ""}
-                  value={form.lead_seconds}
-                  onChange={(e) => setField("lead_seconds", e.target.value)}
-                />
-                {fieldErrors.lead_seconds ? (
-                  <span className="field-error">{fieldErrors.lead_seconds}</span>
-                ) : null}
-              </label>
-              <label>
-                Janela (s)
-                <input
-                  type="number"
-                  min="1"
-                  max="60"
-                  className={fieldErrors.max_window_seconds ? "invalid" : ""}
-                  value={form.max_window_seconds}
-                  onChange={(e) => setField("max_window_seconds", e.target.value)}
-                />
-                {fieldErrors.max_window_seconds ? (
-                  <span className="field-error">{fieldErrors.max_window_seconds}</span>
-                ) : null}
-              </label>
-              <label>
-                Intervalo (ms)
-                <input
-                  type="number"
-                  min="100"
-                  className={fieldErrors.retry_interval_ms ? "invalid" : ""}
-                  value={form.retry_interval_ms}
-                  onChange={(e) => setField("retry_interval_ms", e.target.value)}
-                />
-                {fieldErrors.retry_interval_ms ? (
-                  <span className="field-error">{fieldErrors.retry_interval_ms}</span>
-                ) : null}
-              </label>
+            <div className="quick-times">
+              {[1, 2, 5, 10, 30].map((minutes) => (
+                <button
+                  key={minutes}
+                  type="button"
+                  onClick={() => setField("run_at", toBrasiliaDateTimeLocal(new Date(), minutes * 60 * 1000))}
+                >
+                  Daqui {minutes} min
+                </button>
+              ))}
             </div>
+            {form.run_at ? (
+              <p className={`when-preview ${nowTick >= 0 && describeRunAt(form.run_at).includes("passou") ? "warn" : ""}`}>
+                {describeRunAt(form.run_at)}
+              </p>
+            ) : null}
+            <details className="advanced">
+              <summary>Opções avançadas (quase nunca precisa mudar)</summary>
+              <div className="grid three">
+                <label>
+                  Começar a preparar (segundos antes)
+                  <input
+                    type="number"
+                    min="0"
+                    max="30"
+                    className={fieldErrors.lead_seconds ? "invalid" : ""}
+                    value={form.lead_seconds}
+                    onChange={(e) => setField("lead_seconds", e.target.value)}
+                  />
+                  {fieldErrors.lead_seconds ? (
+                    <span className="field-error">{fieldErrors.lead_seconds}</span>
+                  ) : null}
+                </label>
+                <label>
+                  Tentar de novo até (segundos depois)
+                  <input
+                    type="number"
+                    min="1"
+                    max="60"
+                    className={fieldErrors.max_window_seconds ? "invalid" : ""}
+                    value={form.max_window_seconds}
+                    onChange={(e) => setField("max_window_seconds", e.target.value)}
+                  />
+                  {fieldErrors.max_window_seconds ? (
+                    <span className="field-error">{fieldErrors.max_window_seconds}</span>
+                  ) : null}
+                </label>
+                <label>
+                  Espera entre tentativas (ms)
+                  <input
+                    type="number"
+                    min="100"
+                    className={fieldErrors.retry_interval_ms ? "invalid" : ""}
+                    value={form.retry_interval_ms}
+                    onChange={(e) => setField("retry_interval_ms", e.target.value)}
+                  />
+                  {fieldErrors.retry_interval_ms ? (
+                    <span className="field-error">{fieldErrors.retry_interval_ms}</span>
+                  ) : null}
+                </label>
+              </div>
+            </details>
           </div>
           <div className="row-actions">
             <button className="primary" disabled={busy || connected.length === 0}>
@@ -305,7 +350,7 @@ export default function Schedules() {
             <table>
               <thead>
                 <tr>
-                  <th>Quando (Brasília)</th>
+                  <th>Chega em (Brasília)</th>
                   <th>Conta</th>
                   <th>Chat</th>
                   <th>Status</th>
@@ -425,8 +470,7 @@ function ScheduleDetail({
     <div className="detail">
       <h2>Tentativas · {schedule.chat_ref}</h2>
       <p className="muted">
-        {schedule.message} · {formatBrasilia(schedule.run_at)} · janela {schedule.max_window_seconds}
-        s · intervalo {schedule.retry_interval_ms}ms
+        {schedule.message} · chega em {formatBrasilia(schedule.run_at)}
       </p>
       {error ? <div className="banner">{error}</div> : null}
       {logs.length === 0 ? (
@@ -448,7 +492,7 @@ function ScheduleDetail({
                   <td>{log.latency_ms == null ? "—" : `${log.latency_ms} ms`}</td>
                   <td>
                     <span className={`badge ${log.success ? "ok" : "failed"}`}>
-                      {log.success ? "ok" : "falhou"}
+                      {log.success ? "enviada" : "falhou"}
                     </span>
                     {log.error ? <div className="muted">{log.error}</div> : null}
                   </td>

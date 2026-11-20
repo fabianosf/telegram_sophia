@@ -5,6 +5,7 @@ import Layout from "./components/Layout";
 import Accounts from "./pages/Accounts";
 import Login from "./pages/Login";
 import Schedules from "./pages/Schedules";
+import Settings from "./pages/Settings";
 
 export default function App() {
   return (
@@ -17,6 +18,7 @@ export default function App() {
               <Route path="/" element={<Navigate to="/contas" replace />} />
               <Route path="/contas" element={<Accounts />} />
               <Route path="/agendamentos" element={<Schedules />} />
+              <Route path="/configuracao" element={<Settings />} />
             </Route>
           </Route>
           <Route path="*" element={<Navigate to="/contas" replace />} />

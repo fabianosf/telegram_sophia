@@ -8,7 +8,12 @@ from django.test import TransactionTestCase
 from django.utils import timezone
 
 from core.models import Schedule, SendLog, TelegramAccount
-from worker.engine import WorkerEngine, claim_due_schedules, reap_stuck_schedules
+from worker.engine import (
+    WorkerEngine,
+    claim_due_schedules,
+    parse_chat_ref,
+    reap_stuck_schedules,
+)
 
 User = get_user_model()
 
@@ -19,6 +24,7 @@ class FakeClient:
         self.connected = False
         self.disconnects = 0
         self.entities = []
+        self.sent_to = []
 
     async def connect(self):
         self.connected = True
@@ -33,12 +39,16 @@ class FakeClient:
     async def is_user_authorized(self):
         return True
 
+    async def get_me(self):
+        return SimpleNamespace(id=1, username="alice")
+
     async def get_entity(self, ref):
         self.entities.append(ref)
         return ref
 
     async def send_message(self, entity, message):
         self.send_calls += 1
+        self.sent_to.append(entity)
         return SimpleNamespace(id=self.send_calls)
 
 
@@ -125,6 +135,26 @@ class WorkerEngineTests(TransactionTestCase):
         future.refresh_from_db()
         self.assertEqual(future.status, Schedule.Status.PENDING)
         self.assertEqual(self.client.send_calls, 0)
+
+    def test_parse_chat_ref_saved_messages(self):
+        self.assertEqual(parse_chat_ref("me"), "me")
+        self.assertEqual(parse_chat_ref("eu"), "me")
+        self.assertEqual(parse_chat_ref("Mensagens Salvas"), "me")
+        self.assertEqual(parse_chat_ref("@canal"), "@canal")
+
+    def test_own_username_goes_to_saved_messages(self):
+        schedule = self._schedule(chat_ref="@alice")
+
+        async def run():
+            await self.engine.tick(wait_tasks=True)
+
+        asyncio.run(run())
+        connections.close_all()
+        schedule.refresh_from_db()
+        self.assertEqual(schedule.status, Schedule.Status.SENT)
+        self.assertEqual(self.client.sent_to, ["me"])
+        log = SendLog.objects.get(schedule=schedule, success=True)
+        self.assertIn("Mensagens Salvas", log.error)
 
     def test_reaper_fails_expired_running(self):
         schedule = self._schedule(

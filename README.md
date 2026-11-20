@@ -25,7 +25,8 @@ Horários na UI são sempre **America/Sao_Paulo**.
 ### Fluxo principal
 
 1. Cadastro (`POST /api/auth/register/`) ou login JWT.
-2. Vincular conta: `start` (envia código) → `confirm` (código / senha 2FA) → status `connected`. Retry em `error`/`pending` reusa a mesma linha.
+2. **Configuração:** cada pessoa cola o **próprio** `api_id` / `api_hash` (my.telegram.org). Sem isso não vincula o telefone.
+3. Vincular conta: `start` (envia código) → `confirm` (código / senha 2FA) → status `connected`. Retry em `error`/`pending` reusa a mesma linha.
 3. Criar `Schedule` com chat, mensagem, `run_at`, antecedência (`lead_seconds`), janela e intervalo.
 4. O worker, a cada 1s, pega agendas `pending` com `run_at - lead_seconds <= agora`, marca `running` (sem duplicar), resolve o chat antes da hora e no `run_at` chama `send_message`.
 5. Cada tentativa vira `SendLog` (hora + latência em ms). Sucesso → `sent`. Flood → `failed`. Sessão inválida → conta `error`. Fim da janela sem sucesso → `failed`.
@@ -82,6 +83,7 @@ Rotas autenticadas (sempre filtradas pelo `owner`):
 | PATCH/PUT/DELETE | `/api/schedules/{id}/` | Só se `pending` |
 | POST | `/api/schedules/{id}/cancel/` | Só se `pending` |
 | GET | `/api/send-logs/?schedule=` | Tentativas do agendamento |
+| GET/PUT | `/api/telegram-app/` | App Telegram do usuário (api_id + hash mascarado) |
 | GET | `/api/health/` | Saúde da API + Postgres (público) |
 
 Validações de agenda: `run_at` no futuro; lead 0–30; janela 1–60; intervalo ≥ 100; conta do usuário e `connected`.
@@ -106,7 +108,7 @@ Command: `python manage.py run_worker` (alias: `worker`).
 
 ## Frontend
 
-Rotas: `/login`, `/contas`, `/agendamentos` (protegidas).
+Rotas: `/login`, `/contas`, `/agendamentos`, `/configuracao` (protegidas).
 
 - JWT no `localStorage`; axios com refresh automático no interceptor; “Sessão expirada” no login após 401.
 - Cadastro na mesma tela de login.
@@ -133,8 +135,8 @@ cp .env.example .env
 | `POSTGRES_PORT` | Host: `5433` (5432 local já costuma estar ocupada). Interno Docker: `5432` |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:5173` |
 | `TIME_ZONE` | `America/Sao_Paulo` |
-| `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` | App Telethon |
-| `FERNET_KEY` | Criptografa a sessão Telegram |
+| `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` | Opcional: fallback do servidor. Cada usuário deve configurar o par dela na tela |
+| `FERNET_KEY` | Criptografa sessão e api_hash |
 
 ### `FERNET_KEY`
 
@@ -142,13 +144,19 @@ cp .env.example .env
 python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-Cole em `FERNET_KEY=`. Sem isso o vínculo de conta e os testes de conta quebram.
+Cole em `FERNET_KEY=`. Sem isso a API não sobe.
 
-### `api_id` e `api_hash`
+### Cada pessoa configura o próprio app Telegram
 
-1. [my.telegram.org](https://my.telegram.org) com o número da conta.
-2. **API development tools** → criar um app.
-3. Copiar **App api_id** e **App api_hash**.
+No painel: **Configuração** (http://localhost:5173/configuracao).
+
+1. Abra [my.telegram.org](https://my.telegram.org) com o **mesmo número** que vai vincular.
+2. **API development tools** → criar um app (Title/Short name qualquer).
+3. Copiar **App api_id** (número) e **App api_hash** (texto).
+4. Colar na tela e salvar. Não use o par de outra pessoa.
+5. Ir em **Contas** e enviar o código para o telefone.
+
+O `.env` pode ficar sem `TELEGRAM_API_*`; quem já tem o par no servidor ainda funciona como fallback até salvar o próprio.
 
 ---
 
@@ -175,7 +183,7 @@ docker compose exec api python manage.py createsuperuser
 
 Ambiente local de desenvolvimento já pode ter o usuário **`admin` / `admin123`**.
 
-A API sobe com **Gunicorn**; o frontend é o build do Vite servido pelo Nginx. Sem `FERNET_KEY` e `TELEGRAM_API_*` a API/worker recusam subir.
+A API sobe com **Gunicorn**; o frontend é o build do Vite servido pelo Nginx. Sem `FERNET_KEY` a API/worker recusam subir. Cada usuário configura `api_id`/`api_hash` na tela **Configuração**.
 
 ### Sem Docker na API (só o banco no Compose)
 
@@ -207,12 +215,13 @@ CI: GitHub Actions (`python manage.py test` com Postgres 16).
 
 ## Roteiro de teste manual
 
-1. `make up` e login em http://localhost:5173/login.
-2. **Contas:** nome + telefone com DDI (`+55…`) → enviar código → código (e 2FA) → status `connected`.
-3. **Agendamentos:** conta conectada, chat, mensagem, horário **2 minutos à frente** (Brasília), lead 5, janela 15, intervalo 200 → Agendar.
-4. A tabela deve ir `pending` → `running` → `sent` (atualiza sozinha a cada 3s).
-5. **Detalhes:** tentativas com hora em Brasília e latência em ms.
-6. `make logs` no serviço `worker` acompanha o envio.
+1. `make up`, **Criar conta** em http://localhost:5173/login.
+2. **Configuração:** colar api_id e api_hash (manual na tela).
+3. **Contas:** nome + telefone com DDI (`+55…`) → enviar código → código (e 2FA) → status `connected`.
+4. **Agendamentos:** conta conectada, chat, mensagem, horário **2 minutos à frente** (Brasília) → Agendar.
+5. A tabela deve ir `pending` → `running` → `sent` (atualiza sozinha a cada 3s).
+6. **Detalhes:** tentativas com hora em Brasília e latência em ms.
+7. `make logs` no serviço `worker` acompanha o envio.
 
 ---
 

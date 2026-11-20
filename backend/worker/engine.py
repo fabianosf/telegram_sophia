@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import time
 from datetime import timedelta
@@ -24,7 +25,7 @@ from telethon.errors import (
 )
 
 from core.models import Schedule, SendLog, TelegramAccount
-from core.services.telegram_auth import build_client
+from core.services.telegram_auth import build_client, credentials_for_user
 from core.utils.crypto import decrypt
 
 WRITE_ERRORS = (
@@ -44,6 +45,16 @@ STUCK_GRACE = timedelta(seconds=60)
 HEARTBEAT_PATH = Path(
     os.environ.get("WORKER_HEARTBEAT_PATH", "/tmp/sophia_worker_heartbeat")
 )
+SAVED_CHAT_ALIASES = {
+    "me",
+    "eu",
+    "self",
+    "saved",
+    "salvo",
+    "salvos",
+    "mensagens salvas",
+}
+logger = logging.getLogger("worker.engine")
 
 
 class InvalidTelegramSession(Exception):
@@ -51,7 +62,12 @@ class InvalidTelegramSession(Exception):
 
 
 def parse_chat_ref(value: str):
-    ref = value.strip()
+    ref = " ".join(value.strip().split())
+    if not ref:
+        return ref
+    alias = ref.lstrip("@").lower()
+    if alias in SAVED_CHAT_ALIASES:
+        return "me"
     if ref.lstrip("-").isdigit():
         return int(ref)
     if "t.me/" in ref:
@@ -59,11 +75,37 @@ def parse_chat_ref(value: str):
     return ref
 
 
+async def resolve_destination(client, chat_ref: str):
+    ref = parse_chat_ref(chat_ref)
+    me = None
+    get_me = getattr(client, "get_me", None)
+    if get_me:
+        result = get_me()
+        if asyncio.iscoroutine(result):
+            result = await result
+        me = result
+    my_username = (getattr(me, "username", None) or "").lstrip("@").lower()
+    my_id = getattr(me, "id", None)
+    if ref == "me":
+        return "me", "Mensagens Salvas"
+    if isinstance(ref, str) and my_username and ref.lstrip("@").lower() == my_username:
+        return "me", "Mensagens Salvas"
+    if my_id is not None and ref == my_id:
+        return "me", "Mensagens Salvas"
+    entity = await client.get_entity(ref)
+    return entity, str(ref)
+
+
 def default_client_factory(account: TelegramAccount):
     if not account.session_encrypted:
         raise InvalidTelegramSession("Missing session")
     try:
-        return build_client(decrypt(account.session_encrypted))
+        api_id, api_hash = credentials_for_user(account.owner)
+        return build_client(
+            decrypt(account.session_encrypted),
+            api_id=api_id,
+            api_hash=api_hash,
+        )
     except Exception as exc:
         raise InvalidTelegramSession(str(exc)) from exc
 
@@ -109,7 +151,7 @@ def due_queryset(now):
     )
     due_at = ExpressionWrapper(F("run_at") - lead, output_field=DateTimeField())
     return (
-        Schedule.objects.select_related("account")
+        Schedule.objects.select_related("account", "account__owner")
         .annotate(due_at=due_at)
         .filter(status=Schedule.Status.PENDING, due_at__lte=now)
     )
@@ -295,7 +337,7 @@ class WorkerEngine:
         account = schedule.account
         try:
             client = await self.get_client(account)
-            entity = await client.get_entity(parse_chat_ref(schedule.chat_ref))
+            entity, destination = await resolve_destination(client, schedule.chat_ref)
         except SESSION_ERRORS as exc:
             await add_send_log(schedule.id, False, str(exc), 0)
             await set_account_error(account.id)
@@ -329,8 +371,18 @@ class WorkerEngine:
             try:
                 await client.send_message(entity, schedule.message)
                 latency = int((time.perf_counter() - started) * 1000)
-                await add_send_log(schedule.id, True, "", latency)
+                await add_send_log(schedule.id, True, f"Enviado para {destination}", latency)
                 await set_schedule_status(schedule.id, Schedule.Status.SENT)
+                logger.info(
+                    "schedule %s sent to %s in %sms",
+                    schedule.id,
+                    destination,
+                    latency,
+                )
+                print(
+                    f"schedule {schedule.id} sent to {destination} in {latency}ms",
+                    flush=True,
+                )
                 return
             except FloodWaitError as exc:
                 latency = int((time.perf_counter() - started) * 1000)
