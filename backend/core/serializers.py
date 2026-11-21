@@ -17,10 +17,13 @@ class TelegramAccountSerializer(serializers.ModelSerializer):
 
 class TelegramAppWriteSerializer(serializers.Serializer):
     api_id = serializers.IntegerField(min_value=1)
-    api_hash = serializers.CharField(min_length=8, max_length=128)
+    # Vazio = manter o hash já salvo (não pedir de novo a cada visita)
+    api_hash = serializers.CharField(
+        required=False, allow_blank=True, max_length=128, default=""
+    )
 
     def validate_api_hash(self, value: str) -> str:
-        return value.strip()
+        return (value or "").strip()
 
 
 class AccountStartSerializer(serializers.Serializer):

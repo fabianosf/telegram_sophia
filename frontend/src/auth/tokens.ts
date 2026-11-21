@@ -20,6 +20,12 @@ export function setTokens(tokens: { access?: string; refresh?: string }): void {
 export function clearTokens(): void {
   localStorage.removeItem(ACCESS_KEY);
   localStorage.removeItem(REFRESH_KEY);
+  try {
+    // limpa só o username lembrado; preferências por usuário ficam para o próximo login
+    localStorage.removeItem("ts_username");
+  } catch {
+    /* ignore */
+  }
 }
 
 export function emitLogout(): void {

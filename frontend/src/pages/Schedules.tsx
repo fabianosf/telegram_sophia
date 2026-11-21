@@ -17,6 +17,7 @@ import {
 import { usePolling } from "../hooks/usePolling";
 import { usePrefs } from "../prefs";
 import type { Schedule, ScheduleStatus, SendLog, TelegramDialog } from "../types";
+import { loadScheduleMemory, saveScheduleMemory } from "../userMemory";
 
 interface FormState {
   account: string;
@@ -30,15 +31,16 @@ interface FormState {
 }
 
 function emptyForm(): FormState {
+  const mem = loadScheduleMemory();
   return {
-    account: "",
-    chat_ref: "",
-    chat_title: "",
+    account: mem.account || "",
+    chat_ref: mem.chat_ref || "",
+    chat_title: mem.chat_title || "",
     message: "",
     run_at: toBrasiliaDateTimeLocal(new Date(), 2 * 60 * 1000),
-    lead_seconds: "5",
-    max_window_seconds: "15",
-    retry_interval_ms: "200",
+    lead_seconds: mem.lead_seconds || "5",
+    max_window_seconds: mem.max_window_seconds || "15",
+    retry_interval_ms: mem.retry_interval_ms || "200",
   };
 }
 
@@ -95,7 +97,18 @@ export default function Schedules() {
   const [dialogs, setDialogs] = useState<TelegramDialog[]>([]);
   const [dialogsBusy, setDialogsBusy] = useState(false);
   const [dialogsError, setDialogsError] = useState("");
-  const [manualDest, setManualDest] = useState(false);
+  const [manualDest, setManualDest] = useState(() => Boolean(loadScheduleMemory().manual_dest));
+
+  useEffect(() => {
+    const first = accounts.find((a) => a.status === "connected");
+    if (!first) return;
+    setForm((current) => {
+      const stillValid = accounts.some(
+        (a) => a.status === "connected" && String(a.id) === current.account
+      );
+      return stillValid ? current : { ...current, account: String(first.id) };
+    });
+  }, [accounts]);
 
   useEffect(() => {
     if (!form.account) {
@@ -198,8 +211,16 @@ export default function Schedules() {
         await createSchedule(payload);
         setBanner(t("created"));
       }
-      setForm({ ...emptyForm(), account: form.account });
-      setManualDest(false);
+      saveScheduleMemory({
+        account: form.account,
+        chat_ref: form.chat_ref.trim(),
+        chat_title: form.chat_title.trim(),
+        lead_seconds: form.lead_seconds,
+        max_window_seconds: form.max_window_seconds,
+        retry_interval_ms: form.retry_interval_ms,
+        manual_dest: manualDest,
+      });
+      setForm({ ...emptyForm(), account: form.account, message: "" });
       await reload();
     } catch (err) {
       if (err instanceof ApiError) {

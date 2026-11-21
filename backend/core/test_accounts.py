@@ -307,6 +307,23 @@ class TelegramAppConfigTests(APITestCase):
             decrypt(app.api_hash_encrypted), "d41cee75e1b994ebc82a09726255a303"
         )
 
+    def test_put_keeps_hash_when_blank(self):
+        TelegramApp.objects.create(
+            owner=self.user,
+            api_id=111,
+            api_hash_encrypted=encrypt("keep-this-hash-value"),
+        )
+        response = self.client.put(
+            "/api/telegram-app/",
+            {"api_id": 222, "api_hash": ""},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["api_id"], 222)
+        app = TelegramApp.objects.get(owner=self.user)
+        self.assertEqual(app.api_id, 222)
+        self.assertEqual(decrypt(app.api_hash_encrypted), "keep-this-hash-value")
+
     @patch("core.services.telegram_auth.build_client")
     def test_start_without_credentials_fails(self, mock_build):
         response = self.client.post(

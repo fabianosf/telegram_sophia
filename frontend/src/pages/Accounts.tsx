@@ -13,6 +13,7 @@ import { usePolling } from "../hooks/usePolling";
 import { getTelegramApp } from "../api/telegramApp";
 import { ACCOUNT_STATUS_LABEL } from "../status";
 import type { TelegramAccount, TelegramAppConfig } from "../types";
+import { loadAccountMemory, saveAccountMemory } from "../userMemory";
 
 interface FormState {
   label: string;
@@ -21,18 +22,28 @@ interface FormState {
   password: string;
 }
 
-const EMPTY: FormState = { label: "", phone: "", code: "", password: "" };
+function initialForm(): FormState {
+  const mem = loadAccountMemory();
+  return {
+    label: mem.label || "",
+    phone: mem.phone || "",
+    code: "",
+    password: "",
+  };
+}
 
 export default function Accounts() {
   const { data: accounts, error, loading, reload } = usePolling(listAccounts, 3000);
+  const connected = accounts.filter((a) => a.status === "connected");
   const [step, setStep] = useState<1 | 2>(1);
   const [pendingId, setPendingId] = useState<number | null>(null);
-  const [form, setForm] = useState<FormState>(EMPTY);
+  const [form, setForm] = useState<FormState>(initialForm);
   const [fieldErrors, setFieldErrors] = useState<Partial<FormState>>({});
   const [banner, setBanner] = useState("");
   const [need2fa, setNeed2fa] = useState(false);
   const [busy, setBusy] = useState(false);
   const [telegramApp, setTelegramApp] = useState<TelegramAppConfig | null>(null);
+  const [showAdd, setShowAdd] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -96,10 +107,10 @@ export default function Accounts() {
     if (!validateStart()) return;
     setBusy(true);
     try {
-      const account = await startAccount({
-        label: form.label.trim(),
-        phone: form.phone.replace(/\s/g, ""),
-      });
+      const phone = form.phone.replace(/\s/g, "");
+      const label = form.label.trim();
+      const account = await startAccount({ label, phone });
+      saveAccountMemory({ label, phone });
       setPendingId(account.id);
       setStep(2);
       setNeed2fa(false);
@@ -121,11 +132,12 @@ export default function Accounts() {
         code: form.code.trim(),
         password: form.password,
       });
-      setBanner("Conta conectada.");
+      setBanner("Conta conectada. Ela fica salva — não precisa vincular de novo ao entrar.");
       setStep(1);
       setPendingId(null);
-      setForm(EMPTY);
+      setForm(initialForm());
       setNeed2fa(false);
+      setShowAdd(false);
       await reload();
     } catch (err) {
       if (err instanceof ApiError && /two-factor|2fa|password required/i.test(err.message)) {
@@ -185,102 +197,24 @@ export default function Accounts() {
     }
   }
 
+  const needsLinkForm = showAdd || step === 2 || connected.length === 0 || accounts.some((a) => a.status === "pending");
+
   return (
     <>
       <section className="card">
-        <h2>Vincular conta Telegram</h2>
-        <div className="steps">
-          <b className={step === 1 ? "active" : ""}>1. Telefone</b>
-          <span>→</span>
-          <b className={step === 2 ? "active" : ""}>2. Código / 2FA</b>
-        </div>
+        <h2>Contas Telegram</h2>
+        <p className="muted">
+          Depois de conectar, telefone e sessão ficam salvos na sua conta. Ao entrar de novo, não
+          precisa cadastrar tudo outra vez.
+        </p>
+        {error ? <div className="banner">{error}</div> : null}
         {banner ? (
           <div className={`banner ${banner.includes("conectada") ? "ok" : ""}`}>{banner}</div>
         ) : null}
-        {telegramApp && !appReady ? (
-          <div className="banner">
-            Configure seu app Telegram (api_id e api_hash) antes de vincular o telefone.{" "}
-            <Link to="/configuracao">Abrir Configuração</Link>
-          </div>
-        ) : null}
-        {step === 1 ? (
-          <form className="grid two" onSubmit={submitStart}>
-            <label>
-              Nome
-              <input
-                className={fieldErrors.label ? "invalid" : ""}
-                value={form.label}
-                onChange={(e) => setField("label", e.target.value)}
-                placeholder="Pessoal"
-              />
-              {fieldErrors.label ? <span className="field-error">{fieldErrors.label}</span> : null}
-            </label>
-            <label>
-              Telefone
-              <input
-                className={fieldErrors.phone ? "invalid" : ""}
-                value={form.phone}
-                onChange={(e) => setField("phone", e.target.value)}
-                placeholder="+5511999999999"
-              />
-              {fieldErrors.phone ? <span className="field-error">{fieldErrors.phone}</span> : null}
-            </label>
-            <div className="row-actions">
-              <button className="primary" disabled={busy || !appReady}>
-                {busy ? "Enviando código…" : "Enviar código"}
-              </button>
-            </div>
-          </form>
-        ) : (
-          <form className="grid two" onSubmit={submitConfirm}>
-            <label>
-              Código
-              <input
-                className={fieldErrors.code ? "invalid" : ""}
-                value={form.code}
-                onChange={(e) => setField("code", e.target.value)}
-                placeholder="12345"
-              />
-              {fieldErrors.code ? <span className="field-error">{fieldErrors.code}</span> : null}
-            </label>
-            <label>
-              Senha 2FA {need2fa ? "(obrigatória)" : "(se houver)"}
-              <input
-                type="password"
-                className={fieldErrors.password ? "invalid" : ""}
-                value={form.password}
-                onChange={(e) => setField("password", e.target.value)}
-              />
-              {fieldErrors.password ? (
-                <span className="field-error">{fieldErrors.password}</span>
-              ) : null}
-            </label>
-            <div className="row-actions">
-              <button className="primary" disabled={busy}>
-                {busy ? "Confirmando…" : "Confirmar"}
-              </button>
-              <button
-                type="button"
-                className="ghost"
-                onClick={() => {
-                  setStep(1);
-                  setPendingId(null);
-                }}
-              >
-                Voltar
-              </button>
-            </div>
-          </form>
-        )}
-      </section>
-
-      <section className="card">
-        <h2>Contas</h2>
-        {error ? <div className="banner">{error}</div> : null}
         {loading ? (
           <p className="empty">Carregando contas…</p>
         ) : accounts.length === 0 ? (
-          <p className="empty">Nenhuma conta ainda.</p>
+          <p className="empty">Nenhuma conta ainda — vincule o telefone abaixo (só na primeira vez).</p>
         ) : (
           <div className="table-wrap">
             <table>
@@ -340,7 +274,105 @@ export default function Accounts() {
             </table>
           </div>
         )}
+        {connected.length > 0 && !needsLinkForm ? (
+          <div className="row-actions" style={{ marginTop: 12 }}>
+            <button type="button" className="ghost" onClick={() => setShowAdd(true)}>
+              Adicionar outra conta
+            </button>
+          </div>
+        ) : null}
       </section>
+
+      {needsLinkForm ? (
+        <section className="card">
+          <h2>{connected.length ? "Adicionar conta" : "Vincular telefone"}</h2>
+          <div className="steps">
+            <b className={step === 1 ? "active" : ""}>1. Telefone</b>
+            <span>→</span>
+            <b className={step === 2 ? "active" : ""}>2. Código / 2FA</b>
+          </div>
+          {telegramApp && !appReady ? (
+            <div className="banner">
+              Configure seu app Telegram (api_id e api_hash) antes de vincular o telefone.{" "}
+              <Link to="/configuracao">Abrir Configuração</Link>
+            </div>
+          ) : null}
+          {step === 1 ? (
+            <form className="grid two" onSubmit={submitStart}>
+              <label>
+                Nome
+                <input
+                  className={fieldErrors.label ? "invalid" : ""}
+                  value={form.label}
+                  onChange={(e) => setField("label", e.target.value)}
+                  placeholder="Pessoal"
+                />
+                {fieldErrors.label ? <span className="field-error">{fieldErrors.label}</span> : null}
+              </label>
+              <label>
+                Telefone
+                <input
+                  className={fieldErrors.phone ? "invalid" : ""}
+                  value={form.phone}
+                  onChange={(e) => setField("phone", e.target.value)}
+                  placeholder="+5511999999999"
+                />
+                {fieldErrors.phone ? <span className="field-error">{fieldErrors.phone}</span> : null}
+              </label>
+              <div className="row-actions">
+                <button className="primary" disabled={busy || !appReady}>
+                  {busy ? "Enviando código…" : "Enviar código"}
+                </button>
+                {connected.length > 0 ? (
+                  <button type="button" className="ghost" onClick={() => setShowAdd(false)}>
+                    Cancelar
+                  </button>
+                ) : null}
+              </div>
+            </form>
+          ) : (
+            <form className="grid two" onSubmit={submitConfirm}>
+              <label>
+                Código
+                <input
+                  className={fieldErrors.code ? "invalid" : ""}
+                  value={form.code}
+                  onChange={(e) => setField("code", e.target.value)}
+                  placeholder="12345"
+                />
+                {fieldErrors.code ? <span className="field-error">{fieldErrors.code}</span> : null}
+              </label>
+              <label>
+                Senha 2FA {need2fa ? "(obrigatória)" : "(se houver)"}
+                <input
+                  type="password"
+                  className={fieldErrors.password ? "invalid" : ""}
+                  value={form.password}
+                  onChange={(e) => setField("password", e.target.value)}
+                />
+                {fieldErrors.password ? (
+                  <span className="field-error">{fieldErrors.password}</span>
+                ) : null}
+              </label>
+              <div className="row-actions">
+                <button className="primary" disabled={busy}>
+                  {busy ? "Confirmando…" : "Confirmar"}
+                </button>
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => {
+                    setStep(1);
+                    setPendingId(null);
+                  }}
+                >
+                  Voltar
+                </button>
+              </div>
+            </form>
+          )}
+        </section>
+      ) : null}
     </>
   );
 }

@@ -137,21 +137,39 @@ class TelegramAppView(APIView):
     def put(self, request):
         serializer = TelegramAppWriteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        api_hash = serializer.validated_data["api_hash"]
-        TelegramApp.objects.update_or_create(
-            owner=request.user,
-            defaults={
-                "api_id": serializer.validated_data["api_id"],
-                "api_hash_encrypted": encrypt(api_hash),
-            },
-        )
+        api_id = serializer.validated_data["api_id"]
+        api_hash = serializer.validated_data.get("api_hash") or ""
+        existing = TelegramApp.objects.filter(owner=request.user).first()
+        if not api_hash:
+            if not existing:
+                return Response(
+                    {"api_hash": ["Informe o App api_hash completo."]},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            existing.api_id = api_id
+            existing.save(update_fields=["api_id", "updated_at"])
+            masked = mask_api_hash(decrypt(existing.api_hash_encrypted))
+        else:
+            if len(api_hash) < 8:
+                return Response(
+                    {"api_hash": ["Informe o App api_hash completo."]},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            TelegramApp.objects.update_or_create(
+                owner=request.user,
+                defaults={
+                    "api_id": api_id,
+                    "api_hash_encrypted": encrypt(api_hash),
+                },
+            )
+            masked = mask_api_hash(api_hash)
         return Response(
             {
                 "configured": True,
                 "has_own_app": True,
                 "using_server_fallback": False,
-                "api_id": serializer.validated_data["api_id"],
-                "api_hash_masked": mask_api_hash(api_hash),
+                "api_id": api_id,
+                "api_hash_masked": masked,
             }
         )
 
