@@ -27,4 +27,5 @@ else:
 PY
 
 python manage.py migrate --noinput
+python manage.py createcachetable sophia_drf_cache 2>/dev/null || true
 exec "$@"

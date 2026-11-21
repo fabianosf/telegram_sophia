@@ -44,6 +44,7 @@ class ScheduleSerializer(serializers.ModelSerializer):
             "id",
             "account",
             "chat_ref",
+            "chat_title",
             "message",
             "run_at",
             "lead_seconds",
@@ -53,6 +54,9 @@ class ScheduleSerializer(serializers.ModelSerializer):
             "created_at",
         )
         read_only_fields = ("id", "status", "created_at")
+
+    def validate_chat_title(self, value: str) -> str:
+        return (value or "").strip()[:255]
 
     def validate_run_at(self, value):
         if value <= timezone.now():

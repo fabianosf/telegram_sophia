@@ -59,6 +59,7 @@ class Schedule(models.Model):
         related_name="schedules",
     )
     chat_ref = models.CharField(max_length=255)
+    chat_title = models.CharField(max_length=255, blank=True, default="")
     message = models.TextField()
     run_at = models.DateTimeField()
     lead_seconds = models.PositiveIntegerField(default=5)

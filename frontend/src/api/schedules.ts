@@ -9,6 +9,7 @@ export async function listSchedules(): Promise<Schedule[]> {
 export async function createSchedule(payload: {
   account: number;
   chat_ref: string;
+  chat_title?: string;
   message: string;
   run_at: string;
   lead_seconds: number;
@@ -24,6 +25,7 @@ export async function updateSchedule(
   payload: {
     account: number;
     chat_ref: string;
+    chat_title?: string;
     message: string;
     run_at: string;
     lead_seconds: number;
@@ -38,6 +40,10 @@ export async function updateSchedule(
 export async function cancelSchedule(id: number): Promise<Schedule> {
   const { data } = await client.post<Schedule>(`/schedules/${id}/cancel/`);
   return data;
+}
+
+export async function deleteSchedule(id: number): Promise<void> {
+  await client.delete(`/schedules/${id}/`);
 }
 
 export async function listSendLogs(scheduleId: number): Promise<SendLog[]> {

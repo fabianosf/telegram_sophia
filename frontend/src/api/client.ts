@@ -32,8 +32,12 @@ async function refreshAccess(): Promise<string | null> {
     return null;
   }
   try {
-    const { data } = await refreshClient.post<{ access: string }>("/auth/refresh/", { refresh });
-    setTokens({ access: data.access });
+    // ROTATE_REFRESH_TOKENS: o refresh antigo é invalidado — precisa gravar o novo.
+    const { data } = await refreshClient.post<{ access: string; refresh?: string }>(
+      "/auth/refresh/",
+      { refresh }
+    );
+    setTokens({ access: data.access, refresh: data.refresh });
     return data.access;
   } catch {
     emitLogout();

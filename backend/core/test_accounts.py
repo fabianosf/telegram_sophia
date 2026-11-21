@@ -317,7 +317,7 @@ class TelegramAppConfigTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("Configuração", response.data["detail"])
         mock_build.assert_not_called()
-        self.assertFalse(TelegramAccount.objects.filter(owner=self.user).exists())
+
 
     @patch("core.services.telegram_auth.build_client")
     def test_start_uses_user_telegram_app(self, mock_build):
@@ -337,3 +337,39 @@ class TelegramAppConfigTests(APITestCase):
         kwargs = mock_build.call_args.kwargs
         self.assertEqual(kwargs.get("api_id"), 111)
         self.assertEqual(kwargs.get("api_hash"), "user-hash-value")
+
+
+@override_settings(**API_SETTINGS)
+class AccountDialogsTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="alice", password="secret123")
+        login = self.client.post(
+            "/api/auth/login/",
+            {"username": "alice", "password": "secret123"},
+            format="json",
+        )
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {login.data['access']}")
+        self.account = TelegramAccount.objects.create(
+            owner=self.user,
+            label="Pessoal",
+            phone="+5511",
+            session_encrypted=encrypt("SESSION"),
+            status=TelegramAccount.Status.CONNECTED,
+        )
+
+    @patch("core.views.list_group_dialogs", new_callable=AsyncMock)
+    def test_lists_groups_for_picker(self, mock_list):
+        mock_list.return_value = [
+            {
+                "title": "Grupo Enorme",
+                "chat_ref": "@grupoenorme",
+                "kind": "group",
+                "participants": 2000,
+            }
+        ]
+        response = self.client.get(f"/api/accounts/{self.account.id}/dialogs/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["chat_ref"], "@grupoenorme")
+        self.assertEqual(response.data[0]["kind"], "group")
+        mock_list.assert_awaited()

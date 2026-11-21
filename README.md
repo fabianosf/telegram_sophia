@@ -24,7 +24,7 @@ Horários na UI são sempre **America/Sao_Paulo**.
 
 ### Fluxo principal
 
-1. Cadastro (`POST /api/auth/register/`) ou login JWT.
+1. Cadastro (`POST /api/auth/register/`, se habilitado) ou login JWT. Config pública: `GET /api/auth/config/`.
 2. **Configuração:** cada pessoa cola o **próprio** `api_id` / `api_hash` (my.telegram.org). Sem isso não vincula o telefone.
 3. Vincular conta: `start` (envia código) → `confirm` (código / senha 2FA) → status `connected`. Retry em `error`/`pending` reusa a mesma linha.
 3. Criar `Schedule` com chat, mensagem, `run_at`, antecedência (`lead_seconds`), janela e intervalo.
@@ -127,9 +127,15 @@ cp .env.example .env
 
 | Variável | Função |
 | --- | --- |
-| `SECRET_KEY` | Django / JWT (string longa, ≥ 32 caracteres) |
-| `DEBUG` | `True` em desenvolvimento |
-| `ALLOWED_HOSTS` | `localhost`, `127.0.0.1`, `api` (nome do serviço Docker) |
+| `SECRET_KEY` | Django / JWT (≥ 50 caracteres em produção) |
+| `DEBUG` | `True` em desenvolvimento; padrão `False` |
+| `ALLOWED_HOSTS` | Hosts permitidos (inclua `api` no Docker) |
+| `CSRF_TRUSTED_ORIGINS` | Origens HTTPS confiáveis (produção) |
+| `NUM_PROXIES` | Proxies à frente do Gunicorn (throttle; default 1) |
+| `REGISTRATION_ENABLED` / `REGISTRATION_INVITE_CODE` | Cadastro público e convite |
+| `FERNET_KEYS` | Rotação de chaves Fernet (nova primeiro) |
+| `LOG_LEVEL` | Nível de log (`worker.engine`, `core`) |
+| `REDIS_URL` | Cache opcional; senão `DatabaseCache` |
 | `POSTGRES_DB/USER/PASSWORD` | Credenciais do banco |
 | `POSTGRES_HOST` | Fora do Docker: `localhost`. No Compose a API usa `db` |
 | `POSTGRES_PORT` | Host: `5433` (5432 local já costuma estar ocupada). Interno Docker: `5432` |
@@ -181,7 +187,7 @@ Crie o usuário na tela **Criar conta** (http://localhost:5173/login) ou:
 docker compose exec api python manage.py createsuperuser
 ```
 
-Ambiente local de desenvolvimento já pode ter o usuário **`admin` / `admin123`**.
+Para desenvolvimento, use `DEBUG=True` no `.env` (ver `.env.example`). Em produção o padrão é `DEBUG=False`.
 
 A API sobe com **Gunicorn**; o frontend é o build do Vite servido pelo Nginx. Sem `FERNET_KEY` a API/worker recusam subir. Cada usuário configura `api_id`/`api_hash` na tela **Configuração**.
 
@@ -209,7 +215,40 @@ cd backend && python manage.py test
 
 Cobertura: JWT, cadastro, permissões, validações (conta `connected`, agenda `pending`), login Telegram mockado, retry sem duplicar conta, reaper de `running` preso, claim atômico do worker.
 
-CI: GitHub Actions (`python manage.py test` com Postgres 16).
+CI: GitHub Actions (`python manage.py test`, `check --deploy`, build do frontend).
+
+---
+
+## Deploy em produção
+
+1. Copie e preencha o `.env` a partir de `.env.example` (`DEBUG=False`, `SECRET_KEY` ≥ 50 caracteres, senha forte do Postgres, `DOMAIN`, `CSRF_TRUSTED_ORIGINS` e `CORS_ALLOWED_ORIGINS` com o host HTTPS).
+2. Gere `FERNET_KEY` e guarde em local seguro — **perder a chave invalida todas as sessões Telegram** guardadas no banco (será necessário vincular as contas de novo). Para rotacionar sem perder dados antigos, use `FERNET_KEYS=chave-nova,chave-antiga`.
+3. Suba a stack:
+
+```bash
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+4. TLS: o serviço **Caddy** obtém certificado Let's Encrypt para `DOMAIN` e faz proxy para o Nginx do frontend (HTTP→HTTPS automático). O Nginx envia `X-Forwarded-For` com o IP real (`$remote_addr`) para o throttle da API.
+5. **Backup Postgres** (job manual ou cron no host):
+
+```bash
+docker compose -f docker-compose.prod.yml --profile backup run --rm backup
+```
+
+Arquivos ficam no volume `postgres_backups` (`telegram_sophia-*.sql.gz`). Retenção: `BACKUP_RETENTION_DAYS` (default 7). Restaurar: `gunzip -c arquivo.sql.gz | docker compose -f docker-compose.prod.yml exec -T db psql -U $POSTGRES_USER $POSTGRES_DB`.
+
+6. Opcional: desative cadastro com `REGISTRATION_ENABLED=False` ou exija `REGISTRATION_INVITE_CODE`. O frontend consulta `GET /api/auth/config/`.
+
+O `docker-compose.yml` sem sufixo permanece o ambiente **local** (portas publicadas no host).
+
+---
+
+## Riscos e limitações
+
+- O envio usa **contas de usuário** via Telethon (não o Bot API). Isso pode violar os [Termos de Serviço do Telegram](https://telegram.org/tos) e resultar em **ban** ou limitação da conta.
+- `FloodWaitError` marca o agendamento como falha; não há fila global de rate limit além da janela de cada schedule.
+- Mensagens agendadas dependem do worker estar ativo e da sessão ainda válida.
 
 ---
 

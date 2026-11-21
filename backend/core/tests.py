@@ -1,11 +1,14 @@
 from datetime import timedelta
 
+from cryptography.fernet import Fernet
 from django.contrib.auth import get_user_model
+from django.test import override_settings
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
 from core.models import Schedule, SendLog, TelegramAccount
+from core.utils import crypto
 
 User = get_user_model()
 
@@ -70,6 +73,40 @@ class ApiAuthTests(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn("access", response.data)
+
+    def test_auth_config_is_public(self):
+        response = self.client.get("/api/auth/config/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("registration_enabled", response.data)
+        self.assertIn("invite_required", response.data)
+
+    @override_settings(REGISTRATION_ENABLED=False)
+    def test_register_returns_403_when_disabled(self):
+        response = self.client.post(
+            "/api/auth/register/",
+            {"username": "blocked", "password": "Str0ngPass!x"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    @override_settings(REGISTRATION_INVITE_CODE="secret-invite")
+    def test_register_requires_invite_code(self):
+        bad = self.client.post(
+            "/api/auth/register/",
+            {"username": "novo", "password": "Str0ngPass!x"},
+            format="json",
+        )
+        self.assertEqual(bad.status_code, status.HTTP_400_BAD_REQUEST)
+        ok = self.client.post(
+            "/api/auth/register/",
+            {
+                "username": "convidado",
+                "password": "Str0ngPass!x",
+                "invite_code": "secret-invite",
+            },
+            format="json",
+        )
+        self.assertEqual(ok.status_code, status.HTTP_201_CREATED)
 
 
 class SchedulePermissionTests(APITestCase):
@@ -260,25 +297,36 @@ class ScheduleValidationTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("account", response.data)
 
-    def test_cannot_patch_or_delete_non_pending_schedule(self):
+    def test_cannot_patch_non_pending_but_can_delete_finished(self):
         sent = Schedule.objects.create(
             account=self.account,
             chat_ref="@chat",
+            chat_title="Grupo Demo",
             message="done",
             run_at=timezone.now() + timedelta(hours=1),
             status=Schedule.Status.SENT,
+        )
+        failed = Schedule.objects.create(
+            account=self.account,
+            chat_ref="@x",
+            message="fail",
+            run_at=timezone.now() + timedelta(hours=2),
+            status=Schedule.Status.FAILED,
         )
         patch = self.client.patch(
             f"/api/schedules/{sent.id}/",
             {"message": "alterado"},
             format="json",
         )
-        delete = self.client.delete(f"/api/schedules/{sent.id}/")
         self.assertEqual(patch.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(delete.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertTrue(Schedule.objects.filter(id=sent.id).exists())
         sent.refresh_from_db()
         self.assertEqual(sent.message, "done")
+
+        delete_sent = self.client.delete(f"/api/schedules/{sent.id}/")
+        delete_failed = self.client.delete(f"/api/schedules/{failed.id}/")
+        self.assertEqual(delete_sent.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertEqual(delete_failed.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Schedule.objects.filter(id__in=[sent.id, failed.id]).exists())
 
     def test_can_patch_and_delete_pending_schedule(self):
         pending = Schedule.objects.create(
@@ -308,7 +356,12 @@ class BootSecretsTests(APITestCase):
 
         from core.boot import validate_runtime_secrets
 
-        with override_settings(FERNET_KEY="", TELEGRAM_API_ID="1", TELEGRAM_API_HASH="hash"):
+        with override_settings(
+            FERNET_KEY="",
+            FERNET_KEYS=[],
+            TELEGRAM_API_ID="1",
+            TELEGRAM_API_HASH="hash",
+        ):
             with self.assertRaises(ImproperlyConfigured):
                 validate_runtime_secrets()
 
@@ -320,6 +373,7 @@ class BootSecretsTests(APITestCase):
 
         with override_settings(
             FERNET_KEY="not-a-fernet-key",
+            FERNET_KEYS=["not-a-fernet-key"],
             TELEGRAM_API_ID="1",
             TELEGRAM_API_HASH="hash",
         ):
@@ -338,3 +392,29 @@ class BootSecretsTests(APITestCase):
             TELEGRAM_API_HASH="",
         ):
             validate_runtime_secrets()
+
+    def test_weak_secret_key_fails_when_not_debug(self):
+        from django.core.exceptions import ImproperlyConfigured
+
+        from core.boot import validate_runtime_secrets
+
+        with override_settings(
+            DEBUG=False,
+            SECRET_KEY="insecure-dev-key-change-me-use-at-least-32-chars",
+            FERNET_KEY=Fernet.generate_key().decode(),
+            TELEGRAM_API_ID="",
+            TELEGRAM_API_HASH="",
+        ):
+            with self.assertRaises(ImproperlyConfigured):
+                validate_runtime_secrets()
+
+
+class FernetRotationTests(APITestCase):
+    def test_decrypt_with_old_key_after_rotation(self):
+        old_key = Fernet.generate_key().decode()
+        new_key = Fernet.generate_key().decode()
+        with override_settings(FERNET_KEYS=[new_key, old_key], FERNET_KEY=new_key):
+            token_old = Fernet(old_key.encode()).encrypt(b"session-data").decode()
+            self.assertEqual(crypto.decrypt(token_old), "session-data")
+            fresh = crypto.encrypt("nova-sessao")
+            self.assertEqual(crypto.decrypt(fresh), "nova-sessao")

@@ -13,6 +13,7 @@ export interface Schedule {
   id: number;
   account: number;
   chat_ref: string;
+  chat_title: string;
   message: string;
   run_at: string;
   lead_seconds: number;
@@ -42,4 +43,11 @@ export interface TelegramAppConfig {
   using_server_fallback: boolean;
   api_id: number | null;
   api_hash_masked: string;
+}
+
+export interface TelegramDialog {
+  title: string;
+  chat_ref: string;
+  kind: "group" | "channel";
+  participants: number | null;
 }

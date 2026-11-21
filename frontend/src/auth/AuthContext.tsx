@@ -5,7 +5,7 @@ import { AUTH_LOGOUT_EVENT, clearTokens, getAccessToken, setTokens } from "./tok
 interface AuthContextValue {
   isAuthenticated: boolean;
   login: (username: string, password: string) => Promise<void>;
-  register: (username: string, password: string) => Promise<void>;
+  register: (username: string, password: string, inviteCode?: string) => Promise<void>;
   logout: () => void;
 }
 
@@ -28,8 +28,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setTokens(tokens);
         setIsAuthenticated(true);
       },
-      async register(username, password) {
-        const tokens = await registerRequest(username, password);
+      async register(username, password, inviteCode) {
+        const tokens = await registerRequest(username, password, inviteCode);
         setTokens(tokens);
         setIsAuthenticated(true);
       },

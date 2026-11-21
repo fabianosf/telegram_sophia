@@ -22,6 +22,8 @@ staticfiles/
 # Env
 .env
 .env.local
+.env.dev
+.env.production
 
 # Node / frontend
 node_modules/

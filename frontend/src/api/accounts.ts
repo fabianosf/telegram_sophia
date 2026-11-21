@@ -1,8 +1,13 @@
-import type { TelegramAccount } from "../types";
+import type { TelegramAccount, TelegramDialog } from "../types";
 import { client } from "./client";
 
 export async function listAccounts(): Promise<TelegramAccount[]> {
   const { data } = await client.get<TelegramAccount[]>("/accounts/");
+  return data;
+}
+
+export async function listAccountDialogs(id: number): Promise<TelegramDialog[]> {
+  const { data } = await client.get<TelegramDialog[]>(`/accounts/${id}/dialogs/`);
   return data;
 }
 

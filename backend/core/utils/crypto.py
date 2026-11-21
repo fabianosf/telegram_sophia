@@ -1,17 +1,29 @@
 import os
 
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, MultiFernet
 
 
-def _fernet() -> Fernet:
-    key = os.getenv("FERNET_KEY")
-    if not key:
-        from django.conf import settings
+def _load_fernet_keys() -> list[str]:
+    from django.conf import settings
 
-        key = getattr(settings, "FERNET_KEY", "")
-    if not key:
+    keys: list[str] = []
+    if hasattr(settings, "FERNET_KEYS") and settings.FERNET_KEYS:
+        keys.extend(settings.FERNET_KEYS)
+    elif getattr(settings, "FERNET_KEY", ""):
+        keys.append(settings.FERNET_KEY)
+
+    if not keys:
+        key = os.getenv("FERNET_KEY")
+        if key:
+            keys.append(key)
+    if not keys:
         raise ValueError("FERNET_KEY is not set")
-    return Fernet(key.encode() if isinstance(key, str) else key)
+    return keys
+
+
+def _fernet() -> MultiFernet:
+    keys = _load_fernet_keys()
+    return MultiFernet([Fernet(k.encode() if isinstance(k, str) else k) for k in keys])
 
 
 def encrypt(plaintext: str) -> str:

@@ -7,3 +7,5 @@ telethon==1.46.0
 cryptography==50.0.2
 python-dotenv==1.2.4
 gunicorn==23.0.0
+whitenoise==6.9.0
+redis==5.2.1

@@ -1,18 +1,24 @@
 import asyncio
 from datetime import timedelta
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
+from cryptography.fernet import Fernet
 from django.contrib.auth import get_user_model
 from django.db import close_old_connections, connections
-from django.test import TransactionTestCase
+from django.test import TransactionTestCase, override_settings
 from django.utils import timezone
 
-from core.models import Schedule, SendLog, TelegramAccount
+from telethon.sessions import StringSession
+
+from core.models import Schedule, SendLog, TelegramAccount, TelegramApp
+from core.utils.crypto import encrypt
 from worker.engine import (
     WorkerEngine,
     claim_due_schedules,
     parse_chat_ref,
     reap_stuck_schedules,
+    resolve_destination,
 )
 
 User = get_user_model()
@@ -141,6 +147,16 @@ class WorkerEngineTests(TransactionTestCase):
         self.assertEqual(parse_chat_ref("eu"), "me")
         self.assertEqual(parse_chat_ref("Mensagens Salvas"), "me")
         self.assertEqual(parse_chat_ref("@canal"), "@canal")
+        self.assertEqual(parse_chat_ref("-1001234567890"), -1001234567890)
+        self.assertEqual(
+            parse_chat_ref("https://t.me/+AbCdEfGh"),
+            "https://t.me/+AbCdEfGh",
+        )
+        self.assertEqual(
+            parse_chat_ref("https://t.me/joinchat/AAAAAEHb"),
+            "https://t.me/joinchat/AAAAAEHb",
+        )
+        self.assertEqual(parse_chat_ref("https://t.me/meugrupo"), "@meugrupo")
 
     def test_own_username_goes_to_saved_messages(self):
         schedule = self._schedule(chat_ref="@alice")
@@ -155,6 +171,25 @@ class WorkerEngineTests(TransactionTestCase):
         self.assertEqual(self.client.sent_to, ["me"])
         log = SendLog.objects.get(schedule=schedule, success=True)
         self.assertIn("Mensagens Salvas", log.error)
+
+    def test_resolve_group_by_title_when_username_missing(self):
+        group = SimpleNamespace(id=-1001, title="Equipe Enorme", megagroup=True)
+
+        class DialogClient(FakeClient):
+            async def get_entity(self, ref):
+                raise ValueError("Nobody is using this username")
+
+            async def get_dialogs(self, limit=None):
+                return [SimpleNamespace(name="Equipe Enorme", entity=group)]
+
+        client = DialogClient()
+
+        async def run():
+            return await resolve_destination(client, "Equipe Enorme")
+
+        entity, label = asyncio.run(run())
+        self.assertIs(entity, group)
+        self.assertEqual(label, "Equipe Enorme")
 
     def test_reaper_fails_expired_running(self):
         schedule = self._schedule(
@@ -205,3 +240,75 @@ class WorkerEngineTests(TransactionTestCase):
         connections.close_all()
         schedule.refresh_from_db()
         self.assertEqual(schedule.status, Schedule.Status.RUNNING)
+
+    def test_reaper_marks_sent_when_success_log_exists(self):
+        schedule = self._schedule(
+            status=Schedule.Status.RUNNING,
+            run_at=timezone.now() + timedelta(minutes=5),
+            max_window_seconds=15,
+        )
+        SendLog.objects.create(
+            schedule=schedule,
+            attempt_at=timezone.now(),
+            success=True,
+            error="ok",
+            latency_ms=1,
+        )
+
+        async def run():
+            return await reap_stuck_schedules(recover_in_window=True)
+
+        failed, recovered = asyncio.run(run())
+        connections.close_all()
+        self.assertEqual(failed, 0)
+        self.assertEqual(recovered, 0)
+        schedule.refresh_from_db()
+        self.assertEqual(schedule.status, Schedule.Status.SENT)
+
+
+class DefaultClientFactoryAsyncTests(TransactionTestCase):
+    def setUp(self):
+        self.fernet_key = Fernet.generate_key().decode()
+        self.settings_ctx = override_settings(
+            FERNET_KEYS=[self.fernet_key],
+            FERNET_KEY=self.fernet_key,
+            TELEGRAM_API_ID="",
+            TELEGRAM_API_HASH="",
+        )
+        self.settings_ctx.enable()
+        self.user = User.objects.create_user(username="bob", password="secret123")
+        TelegramApp.objects.create(
+            owner=self.user,
+            api_id=30396601,
+            api_hash_encrypted=encrypt("test-api-hash-value"),
+        )
+        valid_session = StringSession().save()
+        self.account = TelegramAccount.objects.create(
+            owner=self.user,
+            label="Pessoal",
+            phone="+55119999",
+            session_encrypted=encrypt(valid_session),
+            status=TelegramAccount.Status.CONNECTED,
+        )
+
+    def tearDown(self):
+        self.settings_ctx.disable()
+        close_old_connections()
+        connections.close_all()
+
+    @patch("core.services.telegram_auth.TelegramClient")
+    def test_default_factory_runs_without_sync_only(self, mock_client_cls):
+        instance = mock_client_cls.return_value
+        instance.connect = AsyncMock()
+        instance.is_user_authorized = AsyncMock(return_value=True)
+        instance.send_message = AsyncMock()
+
+        async def run():
+            engine = WorkerEngine(idle_seconds=0)
+            client = await engine.get_client(self.account)
+            await client.send_message("me", "hello")
+
+        asyncio.run(run())
+        instance.connect.assert_awaited()
+        instance.is_user_authorized.assert_awaited()
+        instance.send_message.assert_awaited()

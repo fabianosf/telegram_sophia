@@ -24,8 +24,10 @@ from telethon.errors import (
     UserBannedInChannelError,
 )
 
+from cryptography.fernet import InvalidToken
+
 from core.models import Schedule, SendLog, TelegramAccount
-from core.services.telegram_auth import build_client, credentials_for_user
+from core.services.telegram_auth import TelegramAuthError, build_client, credentials_for_user
 from core.utils.crypto import decrypt
 
 WRITE_ERRORS = (
@@ -41,6 +43,9 @@ SESSION_ERRORS = (
     SessionExpiredError,
     SessionRevokedError,
 )
+# Após send_message ter sido invocado, timeout/conexão ambíguos podem indicar envio
+# duplicado — registramos falha e não repetimos automaticamente.
+AMBIGUOUS_SEND_ERRORS = (asyncio.TimeoutError, TimeoutError, ConnectionError, OSError)
 STUCK_GRACE = timedelta(seconds=60)
 HEARTBEAT_PATH = Path(
     os.environ.get("WORKER_HEARTBEAT_PATH", "/tmp/sophia_worker_heartbeat")
@@ -62,6 +67,7 @@ class InvalidTelegramSession(Exception):
 
 
 def parse_chat_ref(value: str):
+    """Normaliza destino: @user, id, link público/privado ou título de grupo."""
     ref = " ".join(value.strip().split())
     if not ref:
         return ref
@@ -70,13 +76,76 @@ def parse_chat_ref(value: str):
         return "me"
     if ref.lstrip("-").isdigit():
         return int(ref)
-    if "t.me/" in ref:
-        return ref.split("t.me/", 1)[-1].split("?")[0]
+    lower = ref.lower()
+    if "t.me/" in lower or "telegram.me/" in lower or "telegram.dog/" in lower:
+        for marker in ("t.me/", "telegram.me/", "telegram.dog/"):
+            if marker in lower:
+                # Preserve original casing for the path segment
+                idx = lower.index(marker)
+                path = ref[idx + len(marker) :].split("?")[0].split("#")[0].strip("/")
+                break
+        else:
+            path = ref
+        if path.lower().startswith("joinchat/"):
+            return f"https://t.me/{path}"
+        if path.startswith("+"):
+            return f"https://t.me/{path}"
+        if path and not path.startswith("@"):
+            # username público via link
+            return f"@{path.split('/')[0]}"
+        return path
     return ref
 
 
+async def _entity_label(entity, fallback: str) -> str:
+    title = getattr(entity, "title", None) or getattr(entity, "username", None)
+    if title:
+        return str(title)
+    return fallback
+
+
+async def _resolve_by_dialog_title(client, title: str):
+    """Grupos privados sem @: casa pelo nome exato nas conversas da conta."""
+    needle = title.strip().casefold()
+    if not needle:
+        return None
+    get_dialogs = getattr(client, "get_dialogs", None)
+    if not get_dialogs:
+        return None
+    dialogs = get_dialogs()
+    if asyncio.iscoroutine(dialogs):
+        dialogs = await dialogs
+    exact = None
+    partial = []
+    for dialog in dialogs or []:
+        name = (getattr(dialog, "name", None) or "").strip()
+        if not name:
+            continue
+        entity = getattr(dialog, "entity", None)
+        if entity is None:
+            continue
+        # Só grupos/canais — envio único no chat, independente do nº de membros
+        if not (
+            getattr(entity, "megagroup", False)
+            or getattr(entity, "broadcast", False)
+            or (hasattr(entity, "title") and not hasattr(entity, "first_name"))
+        ):
+            continue
+        if name.casefold() == needle:
+            exact = entity
+            break
+        if needle in name.casefold():
+            partial.append(entity)
+    if exact is not None:
+        return exact
+    if len(partial) == 1:
+        return partial[0]
+    return None
+
+
 async def resolve_destination(client, chat_ref: str):
-    ref = parse_chat_ref(chat_ref)
+    raw = chat_ref.strip()
+    ref = parse_chat_ref(raw)
     me = None
     get_me = getattr(client, "get_me", None)
     if get_me:
@@ -92,8 +161,28 @@ async def resolve_destination(client, chat_ref: str):
         return "me", "Mensagens Salvas"
     if my_id is not None and ref == my_id:
         return "me", "Mensagens Salvas"
-    entity = await client.get_entity(ref)
-    return entity, str(ref)
+
+    try:
+        entity = await client.get_entity(ref)
+        return entity, await _entity_label(entity, str(ref))
+    except Exception as first_exc:
+        # Título do grupo (ex.: "Equipe Loja") — não é username
+        if isinstance(ref, str) and not ref.startswith("@") and "t.me/" not in ref:
+            by_title = await _resolve_by_dialog_title(client, ref)
+            if by_title is not None:
+                return by_title, await _entity_label(by_title, ref)
+        # Username inválido: tenta título sem o @
+        if isinstance(ref, str) and ref.startswith("@"):
+            by_title = await _resolve_by_dialog_title(client, ref.lstrip("@"))
+            if by_title is not None:
+                return by_title, await _entity_label(by_title, ref)
+        msg = str(first_exc)
+        if "Nobody is using this username" in msg or "USERNAME" in msg.upper():
+            raise ValueError(
+                "Destino não encontrado. Use o seletor de grupos, o @ público do "
+                "grupo, o link t.me/+… / t.me/joinchat/… ou o id numérico (-100…)."
+            ) from first_exc
+        raise
 
 
 def default_client_factory(account: TelegramAccount):
@@ -101,13 +190,19 @@ def default_client_factory(account: TelegramAccount):
         raise InvalidTelegramSession("Missing session")
     try:
         api_id, api_hash = credentials_for_user(account.owner)
-        return build_client(
-            decrypt(account.session_encrypted),
-            api_id=api_id,
-            api_hash=api_hash,
-        )
-    except Exception as exc:
+        session_string = decrypt(account.session_encrypted)
+    except TelegramAuthError as exc:
         raise InvalidTelegramSession(str(exc)) from exc
+    except InvalidToken as exc:
+        raise InvalidTelegramSession("Invalid encrypted session") from exc
+    except ValueError as exc:
+        if "FERNET" in str(exc).upper():
+            raise InvalidTelegramSession(str(exc)) from exc
+        raise
+    return build_client(session_string, api_id=api_id, api_hash=api_hash)
+
+
+_build_client_async = sync_to_async(default_client_factory, thread_sensitive=True)
 
 
 def write_heartbeat() -> None:
@@ -129,10 +224,13 @@ def deadline_queryset():
 def reap_stuck_schedules(*, recover_in_window: bool = False) -> tuple[int, int]:
     now = timezone.now()
     if recover_in_window:
+        Schedule.objects.filter(
+            status=Schedule.Status.RUNNING, logs__success=True
+        ).update(status=Schedule.Status.SENT)
         failed = deadline_queryset().filter(deadline__lt=now).update(
             status=Schedule.Status.FAILED
         )
-        recovered = Schedule.objects.filter(status=Schedule.Status.RUNNING).update(
+        recovered = deadline_queryset().filter(deadline__gte=now).update(
             status=Schedule.Status.PENDING
         )
         close_old_connections()
@@ -176,6 +274,14 @@ def claim_due_schedules() -> list[Schedule]:
 @sync_to_async
 def set_schedule_status(schedule_id: int, status: str) -> int:
     return Schedule.objects.filter(pk=schedule_id).update(status=status)
+
+
+@sync_to_async
+def set_schedule_destination(schedule_id: int, chat_title: str) -> None:
+    title = (chat_title or "").strip()[:255]
+    if not title:
+        return
+    Schedule.objects.filter(pk=schedule_id).update(chat_title=title)
 
 
 @sync_to_async
@@ -276,7 +382,10 @@ class WorkerEngine:
         if cached is not None:
             self.pool.touch(account.id)
             return cached
-        client = self.client_factory(account)
+        if self.client_factory is default_client_factory:
+            client = await _build_client_async(account)
+        else:
+            client = self.client_factory(account)
         connect = getattr(client, "connect", None)
         if connect:
             result = connect()
@@ -332,12 +441,14 @@ class WorkerEngine:
                 await self._process_locked(schedule)
             finally:
                 self.pool.release(account_id)
+                self._schedule_locks.pop(schedule.id, None)
 
     async def _process_locked(self, schedule: Schedule) -> None:
         account = schedule.account
         try:
             client = await self.get_client(account)
             entity, destination = await resolve_destination(client, schedule.chat_ref)
+            await set_schedule_destination(schedule.id, str(destination))
         except SESSION_ERRORS as exc:
             await add_send_log(schedule.id, False, str(exc), 0)
             await set_account_error(account.id)
@@ -379,10 +490,6 @@ class WorkerEngine:
                     destination,
                     latency,
                 )
-                print(
-                    f"schedule {schedule.id} sent to {destination} in {latency}ms",
-                    flush=True,
-                )
                 return
             except FloodWaitError as exc:
                 latency = int((time.perf_counter() - started) * 1000)
@@ -400,6 +507,16 @@ class WorkerEngine:
             except WRITE_ERRORS as exc:
                 latency = int((time.perf_counter() - started) * 1000)
                 await add_send_log(schedule.id, False, str(exc), latency)
+            except AMBIGUOUS_SEND_ERRORS as exc:
+                latency = int((time.perf_counter() - started) * 1000)
+                await add_send_log(
+                    schedule.id,
+                    False,
+                    f"Envio ambíguo (possível duplicata): {exc}",
+                    latency,
+                )
+                await set_schedule_status(schedule.id, Schedule.Status.FAILED)
+                return
             except Exception as exc:
                 latency = int((time.perf_counter() - started) * 1000)
                 await add_send_log(schedule.id, False, str(exc), latency)

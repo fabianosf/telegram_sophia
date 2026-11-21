@@ -66,7 +66,12 @@ def build_client(
                 400,
             )
         api_id, api_hash = creds
-    return TelegramClient(StringSession(session_string or ""), int(api_id), api_hash)
+    return TelegramClient(
+        StringSession(session_string or ""),
+        int(api_id),
+        api_hash,
+        flood_sleep_threshold=0,
+    )
 
 
 async def send_login_code(
@@ -137,6 +142,54 @@ async def disconnect_session(
             await client.log_out()
         else:
             await client.disconnect()
+    except FloodWaitError as exc:
+        raise TelegramAuthError(
+            f"FloodWaitError: aguarde {exc.seconds}s", 429
+        ) from exc
+    finally:
+        if client.is_connected():
+            await client.disconnect()
+
+
+async def list_group_dialogs(
+    session_string: str,
+    api_id: int | None = None,
+    api_hash: str | None = None,
+    *,
+    limit: int = 80,
+) -> list[dict]:
+    """Lista grupos/canais da conta. Uma mensagem no grupo alcança todos os membros."""
+    from telethon import utils
+    from telethon.tl.types import Channel, Chat
+
+    if not session_string:
+        raise TelegramAuthError("Account has no Telegram session.", 400)
+    client = build_client(session_string, api_id=api_id, api_hash=api_hash)
+    await client.connect()
+    try:
+        if not await client.is_user_authorized():
+            raise TelegramAuthError("Session is not authorized.", 400)
+        dialogs = await client.get_dialogs(limit=limit)
+        items: list[dict] = []
+        for dialog in dialogs:
+            entity = dialog.entity
+            if isinstance(entity, Chat):
+                kind = "group"
+            elif isinstance(entity, Channel):
+                kind = "channel" if entity.broadcast and not entity.megagroup else "group"
+            else:
+                continue
+            username = getattr(entity, "username", None) or ""
+            chat_ref = f"@{username}" if username else str(utils.get_peer_id(entity))
+            items.append(
+                {
+                    "title": dialog.name or getattr(entity, "title", "") or chat_ref,
+                    "chat_ref": chat_ref,
+                    "kind": kind,
+                    "participants": getattr(entity, "participants_count", None),
+                }
+            )
+        return items
     except FloodWaitError as exc:
         raise TelegramAuthError(
             f"FloodWaitError: aguarde {exc.seconds}s", 429

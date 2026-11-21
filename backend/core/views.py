@@ -1,4 +1,5 @@
 from asgiref.sync import async_to_sync
+from django.conf import settings
 from django.db import connection
 from django.db.utils import OperationalError
 from rest_framework import mixins, status, viewsets
@@ -25,6 +26,7 @@ from core.services.telegram_auth import (
     credentials_for_user,
     disconnect_session,
     env_credentials,
+    list_group_dialogs,
     mask_api_hash,
     send_login_code,
 )
@@ -54,12 +56,38 @@ class ThrottledTokenObtainPairView(TokenObtainPairView):
     throttle_classes = [LoginRateThrottle]
 
 
+class AuthConfigView(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        return Response(
+            {
+                "registration_enabled": settings.REGISTRATION_ENABLED,
+                "invite_required": bool(settings.REGISTRATION_INVITE_CODE),
+            }
+        )
+
+
 class RegisterView(APIView):
     authentication_classes = []
     permission_classes = [AllowAny]
     throttle_classes = [RegisterRateThrottle]
 
     def post(self, request):
+        if not settings.REGISTRATION_ENABLED:
+            return Response(
+                {"detail": "Registration is disabled."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        invite = settings.REGISTRATION_INVITE_CODE
+        if invite:
+            provided = (request.data.get("invite_code") or "").strip()
+            if provided != invite:
+                return Response(
+                    {"detail": "Invalid or missing invite code."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         serializer = RegisterSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
@@ -221,6 +249,31 @@ class TelegramAccountViewSet(
             return error_response
         return Response(TelegramAccountSerializer(account).data)
 
+    @action(detail=True, methods=["get"], url_path="dialogs")
+    def dialogs(self, request, pk=None):
+        """Grupos/canais da conta para escolher o destino do agendamento."""
+        account = self.get_object()
+        if account.status != TelegramAccount.Status.CONNECTED:
+            return Response(
+                {"detail": "Account must be connected."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not account.session_encrypted:
+            return Response(
+                {"detail": "Account has no Telegram session."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            api_id, api_hash = self._telegram_creds(account.owner)
+            items = async_to_sync(list_group_dialogs)(
+                decrypt(account.session_encrypted),
+                api_id=api_id,
+                api_hash=api_hash,
+            )
+        except TelegramAuthError as exc:
+            return self._auth_error_response(exc)
+        return Response(items)
+
     @action(detail=True, methods=["post"], url_path="confirm")
     def confirm(self, request, pk=None):
         account = self.get_object()
@@ -299,9 +352,13 @@ class ScheduleViewSet(viewsets.ModelViewSet):
         return super().update(request, *args, **kwargs)
 
     def destroy(self, request, *args, **kwargs):
-        blocked = self._ensure_pending(self.get_object())
-        if blocked:
-            return blocked
+        schedule = self.get_object()
+        # Em execução não remove; pendente/falha/enviado/cancelado podem sair da lista.
+        if schedule.status == Schedule.Status.RUNNING:
+            return Response(
+                {"detail": "Running schedules cannot be deleted."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         return super().destroy(request, *args, **kwargs)
 
     @action(detail=True, methods=["post"])

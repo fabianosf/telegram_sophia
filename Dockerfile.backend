@@ -6,12 +6,24 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /src/backend
 
+RUN adduser --disabled-password --gecos "" --uid 10001 appuser
+
 COPY backend/requirements.txt /src/backend/requirements.txt
 RUN pip install --no-cache-dir -r /src/backend/requirements.txt
 
 COPY backend /src/backend
 RUN chmod +x /src/backend/entrypoint.sh
 
+ENV SKIP_BOOT_CHECKS=1 \
+    DEBUG=False \
+    SECRET_KEY=collectstatic-placeholder-key-with-at-least-fifty-characters-long \
+    FERNET_KEY=91cJCD88CcIZtzJlTSdZ-jLAja2SBzKkb_XPHIuhmGA=
+RUN python manage.py collectstatic --noinput
+
+RUN chown -R appuser:appuser /src/backend
+
+USER appuser
+
 EXPOSE 8000
 ENTRYPOINT ["/src/backend/entrypoint.sh"]
-CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "2", "--timeout", "60"]
+CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "2", "--timeout", "60", "--access-logfile", "-", "--error-logfile", "-"]
