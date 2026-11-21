@@ -1,0 +1,9 @@
+# VPS com Nginx do host nas portas 80/443.
+# Uso: docker compose -f docker-compose.prod.yml -f docker-compose.vps.yml up -d --build
+services:
+  caddy:
+    profiles: ["disabled"]
+
+  frontend:
+    ports:
+      - "127.0.0.1:8096:80"

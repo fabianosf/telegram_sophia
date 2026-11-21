@@ -1,7 +1,13 @@
+from datetime import datetime, time, timedelta
+from zoneinfo import ZoneInfo
+
 from asgiref.sync import async_to_sync
 from django.conf import settings
 from django.db import connection
+from django.db.models import Avg, Count, Q
+from django.db.models.functions import TruncDate
 from django.db.utils import OperationalError
+from django.utils import timezone
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -386,3 +392,144 @@ class SendLogViewSet(viewsets.ReadOnlyModelViewSet):
         if schedule_id:
             qs = qs.filter(schedule_id=schedule_id)
         return qs
+
+
+class ReportView(APIView):
+    """Resumo de envios do usuário — filtros: from, to (YYYY-MM-DD), account."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        tz = ZoneInfo(getattr(settings, "TIME_ZONE", "America/Sao_Paulo"))
+        today = timezone.now().astimezone(tz).date()
+        try:
+            days = int(request.query_params.get("days") or 7)
+        except ValueError:
+            days = 7
+        days = max(1, min(days, 90))
+
+        from_raw = (request.query_params.get("from") or "").strip()
+        to_raw = (request.query_params.get("to") or "").strip()
+        try:
+            start_date = (
+                datetime.strptime(from_raw, "%Y-%m-%d").date() if from_raw else today - timedelta(days=days - 1)
+            )
+            end_date = datetime.strptime(to_raw, "%Y-%m-%d").date() if to_raw else today
+        except ValueError:
+            return Response(
+                {"detail": "Use datas no formato AAAA-MM-DD."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if end_date < start_date:
+            start_date, end_date = end_date, start_date
+
+        start_dt = timezone.make_aware(datetime.combine(start_date, time.min), tz)
+        end_dt = timezone.make_aware(datetime.combine(end_date, time.max), tz)
+
+        qs = Schedule.objects.filter(
+            account__owner=request.user,
+            run_at__gte=start_dt,
+            run_at__lte=end_dt,
+        )
+        account_id = (request.query_params.get("account") or "").strip()
+        if account_id:
+            if not account_id.isdigit():
+                return Response(
+                    {"detail": "Conta inválida."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            qs = qs.filter(account_id=int(account_id), account__owner=request.user)
+
+        counts = qs.aggregate(
+            total=Count("id"),
+            sent=Count("id", filter=Q(status=Schedule.Status.SENT)),
+            failed=Count("id", filter=Q(status=Schedule.Status.FAILED)),
+            cancelled=Count("id", filter=Q(status=Schedule.Status.CANCELLED)),
+            pending=Count("id", filter=Q(status=Schedule.Status.PENDING)),
+            running=Count("id", filter=Q(status=Schedule.Status.RUNNING)),
+        )
+        decided = (counts["sent"] or 0) + (counts["failed"] or 0)
+        success_rate = round((counts["sent"] or 0) * 100 / decided, 1) if decided else None
+
+        avg_latency = (
+            SendLog.objects.filter(
+                schedule__in=qs,
+                success=True,
+                latency_ms__isnull=False,
+            ).aggregate(avg=Avg("latency_ms"))["avg"]
+        )
+
+        by_day_rows = (
+            qs.annotate(day=TruncDate("run_at", tzinfo=tz))
+            .values("day")
+            .annotate(
+                sent=Count("id", filter=Q(status=Schedule.Status.SENT)),
+                failed=Count("id", filter=Q(status=Schedule.Status.FAILED)),
+            )
+            .order_by("day")
+        )
+        by_day = [
+            {
+                "date": row["day"].isoformat() if row["day"] else "",
+                "sent": row["sent"],
+                "failed": row["failed"],
+            }
+            for row in by_day_rows
+        ]
+
+        by_account = [
+            {
+                "account_id": row["account_id"],
+                "label": row["account__label"] or f"#{row['account_id']}",
+                "sent": row["sent"],
+                "failed": row["failed"],
+            }
+            for row in qs.values("account_id", "account__label")
+            .annotate(
+                sent=Count("id", filter=Q(status=Schedule.Status.SENT)),
+                failed=Count("id", filter=Q(status=Schedule.Status.FAILED)),
+            )
+            .order_by("-sent", "-failed")
+        ]
+
+        by_destination = []
+        for row in (
+            qs.values("chat_ref", "chat_title")
+            .annotate(
+                sent=Count("id", filter=Q(status=Schedule.Status.SENT)),
+                failed=Count("id", filter=Q(status=Schedule.Status.FAILED)),
+            )
+            .order_by("-sent", "-failed")[:8]
+        ):
+            title = (row["chat_title"] or "").strip()
+            ref = row["chat_ref"]
+            label = title or (
+                "Mensagens Salvas" if ref in ("me", "eu", "Me", "Eu") else ref
+            )
+            by_destination.append(
+                {
+                    "label": label,
+                    "sent": row["sent"],
+                    "failed": row["failed"],
+                }
+            )
+
+        return Response(
+            {
+                "from": start_date.isoformat(),
+                "to": end_date.isoformat(),
+                "totals": {
+                    "total": counts["total"] or 0,
+                    "sent": counts["sent"] or 0,
+                    "failed": counts["failed"] or 0,
+                    "cancelled": counts["cancelled"] or 0,
+                    "pending": counts["pending"] or 0,
+                    "running": counts["running"] or 0,
+                    "success_rate": success_rate,
+                    "avg_latency_ms": int(avg_latency) if avg_latency is not None else None,
+                },
+                "by_day": by_day,
+                "by_account": by_account,
+                "by_destination": by_destination,
+            }
+        )

@@ -418,3 +418,57 @@ class FernetRotationTests(APITestCase):
             self.assertEqual(crypto.decrypt(token_old), "session-data")
             fresh = crypto.encrypt("nova-sessao")
             self.assertEqual(crypto.decrypt(fresh), "nova-sessao")
+
+
+class ReportTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="rep", password="secret123")
+        self.other = User.objects.create_user(username="other", password="secret123")
+        self.account = TelegramAccount.objects.create(
+            owner=self.user, label="Main", phone="+5511999"
+        )
+        other_acc = TelegramAccount.objects.create(
+            owner=self.other, label="Other", phone="+5521999"
+        )
+        now = timezone.now()
+        Schedule.objects.create(
+            account=self.account,
+            chat_ref="me",
+            chat_title="",
+            message="ok",
+            run_at=now - timedelta(hours=2),
+            status=Schedule.Status.SENT,
+        )
+        Schedule.objects.create(
+            account=self.account,
+            chat_ref="@grupo",
+            chat_title="Grupo",
+            message="fail",
+            run_at=now - timedelta(hours=1),
+            status=Schedule.Status.FAILED,
+        )
+        Schedule.objects.create(
+            account=other_acc,
+            chat_ref="me",
+            message="x",
+            run_at=now - timedelta(hours=1),
+            status=Schedule.Status.SENT,
+        )
+
+    def test_report_requires_auth(self):
+        response = self.client.get("/api/reports/")
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_report_own_totals(self):
+        login = self.client.post(
+            "/api/auth/login/",
+            {"username": "rep", "password": "secret123"},
+            format="json",
+        )
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {login.data['access']}")
+        response = self.client.get("/api/reports/?days=7")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["totals"]["sent"], 1)
+        self.assertEqual(response.data["totals"]["failed"], 1)
+        self.assertEqual(response.data["totals"]["success_rate"], 50.0)
+        self.assertTrue(any(d["label"] == "Main" for d in response.data["by_account"]))

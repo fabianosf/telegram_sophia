@@ -11,7 +11,6 @@ import {
 } from "../api/schedules";
 import {
   brasiliaLocalToISO,
-  describeRunAt,
   formatBrasilia,
   toBrasiliaDateTimeLocal,
 } from "../datetime";
@@ -93,16 +92,10 @@ export default function Schedules() {
   const [busy, setBusy] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [nowTick, setNowTick] = useState(0);
   const [dialogs, setDialogs] = useState<TelegramDialog[]>([]);
   const [dialogsBusy, setDialogsBusy] = useState(false);
   const [dialogsError, setDialogsError] = useState("");
   const [manualDest, setManualDest] = useState(false);
-
-  useEffect(() => {
-    const id = window.setInterval(() => setNowTick((tick) => tick + 1), 1000);
-    return () => window.clearInterval(id);
-  }, []);
 
   useEffect(() => {
     if (!form.account) {
@@ -386,15 +379,6 @@ export default function Schedules() {
                 </button>
               ))}
             </div>
-            {form.run_at ? (
-              <p
-                className={`when-preview ${
-                  nowTick >= 0 && describeRunAt(form.run_at).includes("passou") ? "warn" : ""
-                }`}
-              >
-                {describeRunAt(form.run_at)}
-              </p>
-            ) : null}
             <details className="advanced">
               <summary>{t("advanced")}</summary>
               <div className="grid three">
@@ -407,6 +391,7 @@ export default function Schedules() {
                     value={form.lead_seconds}
                     onChange={(e) => setField("lead_seconds", e.target.value)}
                   />
+                  <span className="muted tiny">{t("lead_hint")}</span>
                 </label>
                 <label>
                   {t("window")}
@@ -417,6 +402,7 @@ export default function Schedules() {
                     value={form.max_window_seconds}
                     onChange={(e) => setField("max_window_seconds", e.target.value)}
                   />
+                  <span className="muted tiny">{t("window_hint")}</span>
                 </label>
                 <label>
                   {t("retry")}
@@ -426,6 +412,7 @@ export default function Schedules() {
                     value={form.retry_interval_ms}
                     onChange={(e) => setField("retry_interval_ms", e.target.value)}
                   />
+                  <span className="muted tiny">{t("retry_hint")}</span>
                 </label>
               </div>
             </details>

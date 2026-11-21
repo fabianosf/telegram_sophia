@@ -26,6 +26,12 @@ export default function Layout() {
               {t("nav_schedules")}
             </NavLink>
             <NavLink
+              to="/relatorios"
+              className={({ isActive }) => (isActive ? "active" : "")}
+            >
+              {t("nav_reports")}
+            </NavLink>
+            <NavLink
               to="/configuracao"
               className={({ isActive }) => (isActive ? "active" : "")}
             >

@@ -4,6 +4,7 @@ import ProtectedRoute from "./auth/ProtectedRoute";
 import Layout from "./components/Layout";
 import Accounts from "./pages/Accounts";
 import Login from "./pages/Login";
+import Reports from "./pages/Reports";
 import Schedules from "./pages/Schedules";
 import Settings from "./pages/Settings";
 import { PrefsProvider } from "./prefs";
@@ -20,6 +21,7 @@ export default function App() {
                 <Route path="/" element={<Navigate to="/contas" replace />} />
                 <Route path="/contas" element={<Accounts />} />
                 <Route path="/agendamentos" element={<Schedules />} />
+                <Route path="/relatorios" element={<Reports />} />
                 <Route path="/configuracao" element={<Settings />} />
               </Route>
             </Route>
