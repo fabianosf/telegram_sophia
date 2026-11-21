@@ -4,7 +4,39 @@ import { fetchReport, type ReportResponse } from "../api/reports";
 import { usePrefs } from "../prefs";
 import type { TelegramAccount } from "../types";
 
-type Preset = "7" | "30" | "90";
+type Preset = "7" | "30" | "90" | "custom";
+
+function isoToday(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function isoDaysAgo(days: number): string {
+  const d = new Date();
+  d.setHours(12, 0, 0, 0);
+  d.setDate(d.getDate() - (days - 1));
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/** AAAA-MM-DD → DD/MM/AAAA */
+function brDate(iso: string): string {
+  if (!iso || iso.length < 10) return iso;
+  const [y, m, d] = iso.slice(0, 10).split("-");
+  return `${d}/${m}/${y}`;
+}
+
+/** AAAA-MM-DD → DD/MM */
+function brDay(iso: string): string {
+  if (!iso || iso.length < 10) return iso;
+  const [, m, d] = iso.slice(0, 10).split("-");
+  return `${d}/${m}`;
+}
 
 function BarChart({
   rows,
@@ -46,6 +78,8 @@ function BarChart({
 export default function Reports() {
   const { t } = usePrefs();
   const [preset, setPreset] = useState<Preset>("7");
+  const [fromDate, setFromDate] = useState(() => isoDaysAgo(7));
+  const [toDate, setToDate] = useState(() => isoToday());
   const [account, setAccount] = useState("");
   const [accounts, setAccounts] = useState<TelegramAccount[]>([]);
   const [data, setData] = useState<ReportResponse | null>(null);
@@ -63,7 +97,8 @@ export default function Reports() {
     setLoading(true);
     setError("");
     void fetchReport({
-      days: Number(preset),
+      from: fromDate,
+      to: toDate,
       account: account || undefined,
     })
       .then((report) => {
@@ -78,12 +113,22 @@ export default function Reports() {
     return () => {
       cancelled = true;
     };
-  }, [preset, account, t]);
+  }, [fromDate, toDate, account, t]);
+
+  function applyPreset(p: Preset) {
+    if (p === "custom") {
+      setPreset("custom");
+      return;
+    }
+    setPreset(p);
+    setFromDate(isoDaysAgo(Number(p)));
+    setToDate(isoToday());
+  }
 
   const totals = data?.totals;
   const dayRows =
     data?.by_day.map((d) => ({
-      label: d.date.slice(5).replace("-", "/"),
+      label: brDay(d.date),
       sent: d.sent,
       failed: d.failed,
     })) ?? [];
@@ -100,11 +145,39 @@ export default function Reports() {
                 key={p}
                 type="button"
                 className={preset === p ? "active-toggle" : ""}
-                onClick={() => setPreset(p)}
+                onClick={() => applyPreset(p)}
               >
                 {t(`report_days_${p}`)}
               </button>
             ))}
+          </div>
+          <div className="report-dates">
+            <label>
+              {t("report_from")}
+              <input
+                type="date"
+                value={fromDate}
+                max={toDate}
+                onChange={(e) => {
+                  setPreset("custom");
+                  setFromDate(e.target.value);
+                }}
+              />
+            </label>
+            <span className="report-date-sep muted">{t("report_until")}</span>
+            <label>
+              {t("report_to")}
+              <input
+                type="date"
+                value={toDate}
+                min={fromDate}
+                max={isoToday()}
+                onChange={(e) => {
+                  setPreset("custom");
+                  setToDate(e.target.value);
+                }}
+              />
+            </label>
           </div>
           <label className="report-account">
             {t("account")}
@@ -123,7 +196,8 @@ export default function Reports() {
         {!loading && totals ? (
           <>
             <p className="muted tiny">
-              {t("report_period")}: {data?.from} → {data?.to}
+              {t("report_period")}: {brDate(data?.from || fromDate)} {t("report_until")}{" "}
+              {brDate(data?.to || toDate)}
             </p>
             <div className="report-kpis">
               <div className="report-kpi">

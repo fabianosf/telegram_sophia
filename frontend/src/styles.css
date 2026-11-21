@@ -776,6 +776,22 @@ html[data-theme="dark"] .when-preview {
   margin: 12px 0 8px;
 }
 
+.report-dates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 12px;
+  align-items: end;
+}
+
+.report-dates label {
+  min-width: 148px;
+}
+
+.report-date-sep {
+  padding-bottom: 10px;
+  font-size: 0.9rem;
+}
+
 .report-account {
   min-width: 200px;
   flex: 1;
