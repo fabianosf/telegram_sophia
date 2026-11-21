@@ -197,19 +197,27 @@ export default function Accounts() {
     }
   }
 
-  const needsLinkForm = showAdd || step === 2 || connected.length === 0 || accounts.some((a) => a.status === "pending");
+  // Só abre o fluxo telefone→código na 1ª vez, se houver pendência, ou se pedir "Adicionar".
+  const hasPending = accounts.some((a) => a.status === "pending");
+  const needsLinkForm =
+    showAdd || step === 2 || (connected.length === 0 && !loading) || hasPending;
 
   return (
     <>
       <section className="card">
         <h2>Contas Telegram</h2>
         <p className="muted">
-          Depois de conectar, telefone e sessão ficam salvos na sua conta. Ao entrar de novo, não
-          precisa cadastrar tudo outra vez.
+          Conecte o telefone uma vez. Depois disso, ao entrar de novo, a conta já aparece pronta —
+          sem repetir código.
         </p>
         {error ? <div className="banner">{error}</div> : null}
         {banner ? (
           <div className={`banner ${banner.includes("conectada") ? "ok" : ""}`}>{banner}</div>
+        ) : null}
+        {!loading && connected.length > 0 && !needsLinkForm ? (
+          <div className="banner ok">
+            Telegram conectado. Pode ir em Agendamentos — não precisa vincular de novo.
+          </div>
         ) : null}
         {loading ? (
           <p className="empty">Carregando contas…</p>

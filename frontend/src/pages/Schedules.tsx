@@ -294,25 +294,35 @@ export default function Schedules() {
           <p className="empty">{t("connect_first")}</p>
         ) : null}
         <form className="grid" onSubmit={submit}>
-          <div className="grid two">
-            <label>
-              {t("account")}
-              <select
-                className={fieldErrors.account ? "invalid" : ""}
-                value={form.account}
-                onChange={(e) => setField("account", e.target.value)}
-              >
-                <option value="">{t("select")}</option>
-                {connected.map((account) => (
-                  <option key={account.id} value={account.id}>
-                    {account.label}
-                  </option>
-                ))}
-              </select>
-              {fieldErrors.account ? (
-                <span className="field-error">{fieldErrors.account}</span>
-              ) : null}
-            </label>
+          {connected.length === 1 ? (
+            <p className="when-preview">
+              {t("using_account")}:{" "}
+              <strong>
+                {connected[0].label} ({connected[0].phone})
+              </strong>
+            </p>
+          ) : null}
+          <div className={connected.length > 1 ? "grid two" : "grid"}>
+            {connected.length > 1 ? (
+              <label>
+                {t("account")}
+                <select
+                  className={fieldErrors.account ? "invalid" : ""}
+                  value={form.account}
+                  onChange={(e) => setField("account", e.target.value)}
+                >
+                  <option value="">{t("select")}</option>
+                  {connected.map((account) => (
+                    <option key={account.id} value={account.id}>
+                      {account.label}
+                    </option>
+                  ))}
+                </select>
+                {fieldErrors.account ? (
+                  <span className="field-error">{fieldErrors.account}</span>
+                ) : null}
+              </label>
+            ) : null}
             <label>
               {t("group")}
               <select
