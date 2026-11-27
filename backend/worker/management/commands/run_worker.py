@@ -17,7 +17,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "--idle-seconds",
             type=float,
-            default=30,
+            default=180,
             help="Disconnect cached Telethon clients after this idle period.",
         )
 

@@ -13,6 +13,7 @@ const FIELD_LABELS: Record<string, string> = {
   lead_seconds: "Começar antes",
   max_window_seconds: "Continuar tentando por",
   retry_interval_ms: "Pausa entre tentativas",
+  fire_early_ms: "Adiantar envio",
   api_id: "App api_id",
   api_hash: "App api_hash",
   detail: "Erro",

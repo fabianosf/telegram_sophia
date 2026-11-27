@@ -15,6 +15,7 @@ export async function createSchedule(payload: {
   lead_seconds: number;
   max_window_seconds: number;
   retry_interval_ms: number;
+  fire_early_ms: number;
 }): Promise<Schedule> {
   const { data } = await client.post<Schedule>("/schedules/", payload);
   return data;
@@ -31,6 +32,7 @@ export async function updateSchedule(
     lead_seconds: number;
     max_window_seconds: number;
     retry_interval_ms: number;
+    fire_early_ms: number;
   }
 ): Promise<Schedule> {
   const { data } = await client.patch<Schedule>(`/schedules/${id}/`, payload);

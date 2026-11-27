@@ -37,9 +37,10 @@ class AccountConfirmSerializer(serializers.Serializer):
 
 
 class ScheduleSerializer(serializers.ModelSerializer):
-    lead_seconds = serializers.IntegerField(min_value=0, max_value=30, default=5)
+    lead_seconds = serializers.IntegerField(min_value=0, max_value=30, default=12)
     max_window_seconds = serializers.IntegerField(min_value=1, max_value=60, default=15)
-    retry_interval_ms = serializers.IntegerField(min_value=100, default=200)
+    retry_interval_ms = serializers.IntegerField(min_value=100, default=100)
+    fire_early_ms = serializers.IntegerField(min_value=0, max_value=500, default=150)
 
     class Meta:
         model = Schedule
@@ -53,6 +54,7 @@ class ScheduleSerializer(serializers.ModelSerializer):
             "lead_seconds",
             "max_window_seconds",
             "retry_interval_ms",
+            "fire_early_ms",
             "status",
             "created_at",
         )
@@ -105,5 +107,6 @@ class SendLogSerializer(serializers.ModelSerializer):
             "success",
             "error",
             "latency_ms",
+            "skew_ms",
         )
         read_only_fields = fields

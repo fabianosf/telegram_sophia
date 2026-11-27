@@ -19,6 +19,7 @@ export interface Schedule {
   lead_seconds: number;
   max_window_seconds: number;
   retry_interval_ms: number;
+  fire_early_ms: number;
   status: ScheduleStatus;
   created_at: string;
 }
@@ -30,6 +31,7 @@ export interface SendLog {
   success: boolean;
   error: string;
   latency_ms: number | null;
+  skew_ms: number | null;
 }
 
 export interface TokenPair {

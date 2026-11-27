@@ -215,9 +215,10 @@ class ScheduleValidationTests(APITestCase):
             "chat_ref": "@chat",
             "message": "teste",
             "run_at": (timezone.now() + timedelta(hours=1)).isoformat(),
-            "lead_seconds": 5,
+            "lead_seconds": 12,
             "max_window_seconds": 15,
-            "retry_interval_ms": 200,
+            "retry_interval_ms": 100,
+            "fire_early_ms": 150,
         }
         data.update(overrides)
         return data
@@ -257,6 +258,21 @@ class ScheduleValidationTests(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("retry_interval_ms", response.data)
+
+    def test_fire_early_ms_range(self):
+        too_high = self.client.post(
+            "/api/schedules/", self._payload(fire_early_ms=501), format="json"
+        )
+        too_low = self.client.post(
+            "/api/schedules/", self._payload(fire_early_ms=-1), format="json"
+        )
+        ok = self.client.post(
+            "/api/schedules/", self._payload(fire_early_ms=150), format="json"
+        )
+        self.assertEqual(too_high.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(too_low.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(ok.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(ok.data["fire_early_ms"], 150)
 
     def test_cancel_only_when_pending(self):
         pending = Schedule.objects.create(

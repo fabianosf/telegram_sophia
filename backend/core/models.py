@@ -62,9 +62,11 @@ class Schedule(models.Model):
     chat_title = models.CharField(max_length=255, blank=True, default="")
     message = models.TextField()
     run_at = models.DateTimeField()
-    lead_seconds = models.PositiveIntegerField(default=5)
+    lead_seconds = models.PositiveIntegerField(default=12)
     max_window_seconds = models.PositiveIntegerField(default=15)
-    retry_interval_ms = models.PositiveIntegerField(default=200)
+    retry_interval_ms = models.PositiveIntegerField(default=100)
+    # Dispara um pouco antes de run_at para compensar RTT (melhor posição no grupo).
+    fire_early_ms = models.PositiveIntegerField(default=150)
     status = models.CharField(
         max_length=16,
         choices=Status.choices,
@@ -92,6 +94,8 @@ class SendLog(models.Model):
     success = models.BooleanField()
     error = models.TextField(blank=True)
     latency_ms = models.IntegerField(null=True, blank=True)
+    # attempt_at - run_at em ms (negativo = disparou antes do horário)
+    skew_ms = models.IntegerField(null=True, blank=True)
 
     class Meta:
         ordering = ["-attempt_at"]

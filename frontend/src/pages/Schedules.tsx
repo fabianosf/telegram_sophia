@@ -28,6 +28,7 @@ interface FormState {
   lead_seconds: string;
   max_window_seconds: string;
   retry_interval_ms: string;
+  fire_early_ms: string;
 }
 
 function emptyForm(): FormState {
@@ -38,9 +39,10 @@ function emptyForm(): FormState {
     chat_title: mem.chat_title || "",
     message: "",
     run_at: toBrasiliaDateTimeLocal(new Date(), 2 * 60 * 1000),
-    lead_seconds: mem.lead_seconds || "5",
+    lead_seconds: mem.lead_seconds || "12",
     max_window_seconds: mem.max_window_seconds || "15",
-    retry_interval_ms: mem.retry_interval_ms || "200",
+    retry_interval_ms: mem.retry_interval_ms || "100",
+    fire_early_ms: mem.fire_early_ms || "150",
   };
 }
 
@@ -202,6 +204,7 @@ export default function Schedules() {
         lead_seconds: Number(form.lead_seconds),
         max_window_seconds: Number(form.max_window_seconds),
         retry_interval_ms: Number(form.retry_interval_ms),
+        fire_early_ms: Number(form.fire_early_ms),
       };
       if (editingId) {
         await updateSchedule(editingId, payload);
@@ -218,6 +221,7 @@ export default function Schedules() {
         lead_seconds: form.lead_seconds,
         max_window_seconds: form.max_window_seconds,
         retry_interval_ms: form.retry_interval_ms,
+        fire_early_ms: form.fire_early_ms,
         manual_dest: manualDest,
       });
       setForm({ ...emptyForm(), account: form.account, message: "" });
@@ -251,6 +255,7 @@ export default function Schedules() {
       lead_seconds: String(schedule.lead_seconds),
       max_window_seconds: String(schedule.max_window_seconds),
       retry_interval_ms: String(schedule.retry_interval_ms),
+      fire_early_ms: String(schedule.fire_early_ms ?? 150),
     });
   }
 
@@ -412,7 +417,7 @@ export default function Schedules() {
             </div>
             <details className="advanced">
               <summary>{t("advanced")}</summary>
-              <div className="grid three">
+              <div className="grid two">
                 <label>
                   {t("lead")}
                   <input
@@ -423,6 +428,17 @@ export default function Schedules() {
                     onChange={(e) => setField("lead_seconds", e.target.value)}
                   />
                   <span className="muted tiny">{t("lead_hint")}</span>
+                </label>
+                <label>
+                  {t("fire_early")}
+                  <input
+                    type="number"
+                    min="0"
+                    max="500"
+                    value={form.fire_early_ms}
+                    onChange={(e) => setField("fire_early_ms", e.target.value)}
+                  />
+                  <span className="muted tiny">{t("fire_early_hint")}</span>
                 </label>
                 <label>
                   {t("window")}
@@ -770,6 +786,7 @@ function ScheduleDetail({
               <tr>
                 <th>{t("attempt")}</th>
                 <th>{t("latency")}</th>
+                <th>{t("skew")}</th>
                 <th>{t("result")}</th>
               </tr>
             </thead>
@@ -778,6 +795,7 @@ function ScheduleDetail({
                 <tr key={log.id}>
                   <td>{formatBrasilia(log.attempt_at)}</td>
                   <td>{log.latency_ms == null ? "—" : `${log.latency_ms} ms`}</td>
+                  <td>{log.skew_ms == null ? "—" : `${log.skew_ms} ms`}</td>
                   <td>
                     <span className={`badge ${log.success ? "ok" : "failed"}`}>
                       {log.success ? t("status_sent") : t("status_failed")}

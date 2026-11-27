@@ -9,7 +9,7 @@ from pathlib import Path
 
 from asgiref.sync import sync_to_async
 from django.db import close_old_connections, transaction
-from django.db.models import DateTimeField, DurationField, ExpressionWrapper, F, Value
+from django.db.models import DateTimeField, DurationField, ExpressionWrapper, F, Q, Value
 from django.utils import timezone
 from telethon.errors import (
     AuthKeyUnregisteredError,
@@ -297,18 +297,38 @@ def set_account_error(account_id: int) -> None:
 
 
 @sync_to_async
-def add_send_log(schedule_id: int, success: bool, error: str, latency_ms: int) -> None:
+def add_send_log(
+    schedule_id: int,
+    success: bool,
+    error: str,
+    latency_ms: int,
+    skew_ms: int | None = None,
+) -> None:
     SendLog.objects.create(
         schedule_id=schedule_id,
         attempt_at=timezone.now(),
         success=success,
         error=error,
         latency_ms=latency_ms,
+        skew_ms=skew_ms,
     )
 
 
+@sync_to_async
+def has_imminent_work(horizon_seconds: float = 20) -> bool:
+    """True se há envio pendente/em curso perto do horário (poll rápido)."""
+    now = timezone.now()
+    soon = now + timedelta(seconds=horizon_seconds)
+    past = now - timedelta(seconds=horizon_seconds)
+    return Schedule.objects.filter(
+        Q(status=Schedule.Status.PENDING) | Q(status=Schedule.Status.RUNNING),
+        run_at__lte=soon,
+        run_at__gte=past,
+    ).exists()
+
+
 class ClientPool:
-    def __init__(self, idle_seconds: float = 30):
+    def __init__(self, idle_seconds: float = 180):
         self.idle_seconds = idle_seconds
         self._clients: dict[int, object] = {}
         self._last_used: dict[int, float] = {}
@@ -369,7 +389,7 @@ class ClientPool:
 
 
 class WorkerEngine:
-    def __init__(self, client_factory=None, idle_seconds: float = 30):
+    def __init__(self, client_factory=None, idle_seconds: float = 180):
         self.client_factory = client_factory or default_client_factory
         self.pool = ClientPool(idle_seconds=idle_seconds)
         self._schedule_locks: dict[int, asyncio.Lock] = {}
@@ -423,7 +443,9 @@ class WorkerEngine:
                 tasks = await self.tick(wait_tasks=False)
                 pending.update(tasks)
                 pending = {task for task in pending if not task.done()}
-                await asyncio.sleep(1)
+                # Poll rápido perto do horário; ocioso = 1s
+                interval = 0.1 if (pending or await has_imminent_work()) else 1.0
+                await asyncio.sleep(interval)
         finally:
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
@@ -465,7 +487,9 @@ class WorkerEngine:
             return
 
         deadline = schedule.run_at + timedelta(seconds=schedule.max_window_seconds)
-        delay = (schedule.run_at - timezone.now()).total_seconds()
+        early_ms = max(int(getattr(schedule, "fire_early_ms", 0) or 0), 0)
+        fire_at = schedule.run_at - timedelta(milliseconds=early_ms)
+        delay = (fire_at - timezone.now()).total_seconds()
         if delay > 0:
             await asyncio.sleep(delay)
 
@@ -474,39 +498,59 @@ class WorkerEngine:
             return
 
         interval = max(schedule.retry_interval_ms, 0) / 1000.0
+
+        def _skew_ms() -> int:
+            return int((timezone.now() - schedule.run_at).total_seconds() * 1000)
+
         while timezone.now() <= deadline:
             current = await get_schedule_status(schedule.id)
             if current != Schedule.Status.RUNNING:
                 return
+            skew_ms = _skew_ms()
             started = time.perf_counter()
             try:
                 await client.send_message(entity, schedule.message)
                 latency = int((time.perf_counter() - started) * 1000)
-                await add_send_log(schedule.id, True, f"Enviado para {destination}", latency)
+                await add_send_log(
+                    schedule.id,
+                    True,
+                    f"Enviado para {destination} (adianto {skew_ms} ms vs horário)",
+                    latency,
+                    skew_ms=skew_ms,
+                )
                 await set_schedule_status(schedule.id, Schedule.Status.SENT)
                 logger.info(
-                    "schedule %s sent to %s in %sms",
+                    "schedule %s sent to %s in %sms skew=%sms",
                     schedule.id,
                     destination,
                     latency,
+                    skew_ms,
                 )
                 return
             except FloodWaitError as exc:
                 latency = int((time.perf_counter() - started) * 1000)
                 await add_send_log(
-                    schedule.id, False, f"FloodWaitError: aguarde {exc.seconds}s", latency
+                    schedule.id,
+                    False,
+                    f"FloodWaitError: aguarde {exc.seconds}s",
+                    latency,
+                    skew_ms=skew_ms,
                 )
                 await set_schedule_status(schedule.id, Schedule.Status.FAILED)
                 return
             except SESSION_ERRORS as exc:
                 latency = int((time.perf_counter() - started) * 1000)
-                await add_send_log(schedule.id, False, str(exc), latency)
+                await add_send_log(
+                    schedule.id, False, str(exc), latency, skew_ms=skew_ms
+                )
                 await set_account_error(account.id)
                 await set_schedule_status(schedule.id, Schedule.Status.FAILED)
                 return
             except WRITE_ERRORS as exc:
                 latency = int((time.perf_counter() - started) * 1000)
-                await add_send_log(schedule.id, False, str(exc), latency)
+                await add_send_log(
+                    schedule.id, False, str(exc), latency, skew_ms=skew_ms
+                )
             except AMBIGUOUS_SEND_ERRORS as exc:
                 latency = int((time.perf_counter() - started) * 1000)
                 await add_send_log(
@@ -514,12 +558,15 @@ class WorkerEngine:
                     False,
                     f"Envio ambíguo (possível duplicata): {exc}",
                     latency,
+                    skew_ms=skew_ms,
                 )
                 await set_schedule_status(schedule.id, Schedule.Status.FAILED)
                 return
             except Exception as exc:
                 latency = int((time.perf_counter() - started) * 1000)
-                await add_send_log(schedule.id, False, str(exc), latency)
+                await add_send_log(
+                    schedule.id, False, str(exc), latency, skew_ms=skew_ms
+                )
 
             remaining = (deadline - timezone.now()).total_seconds()
             if remaining <= 0:

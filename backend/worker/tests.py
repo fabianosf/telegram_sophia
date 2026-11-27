@@ -16,6 +16,7 @@ from core.utils.crypto import encrypt
 from worker.engine import (
     WorkerEngine,
     claim_due_schedules,
+    has_imminent_work,
     parse_chat_ref,
     reap_stuck_schedules,
     resolve_destination,
@@ -88,6 +89,7 @@ class WorkerEngineTests(TransactionTestCase):
             "lead_seconds": 0,
             "max_window_seconds": 5,
             "retry_interval_ms": 50,
+            "fire_early_ms": 0,
             "status": Schedule.Status.PENDING,
         }
         data.update(kwargs)
@@ -264,6 +266,35 @@ class WorkerEngineTests(TransactionTestCase):
         self.assertEqual(recovered, 0)
         schedule.refresh_from_db()
         self.assertEqual(schedule.status, Schedule.Status.SENT)
+
+    def test_fire_early_records_skew(self):
+        schedule = self._schedule(
+            run_at=timezone.now() + timedelta(milliseconds=400),
+            fire_early_ms=250,
+            lead_seconds=5,
+            max_window_seconds=5,
+        )
+
+        async def run():
+            await self.engine.tick(wait_tasks=True)
+
+        asyncio.run(run())
+        connections.close_all()
+        schedule.refresh_from_db()
+        self.assertEqual(schedule.status, Schedule.Status.SENT)
+        log = SendLog.objects.get(schedule=schedule, success=True)
+        self.assertIsNotNone(log.skew_ms)
+        # Disparo antes (ou muito perto) do horário marcado
+        self.assertLess(log.skew_ms, 200)
+
+    def test_has_imminent_work(self):
+        self._schedule(run_at=timezone.now() + timedelta(seconds=5), lead_seconds=0)
+
+        async def run():
+            return await has_imminent_work(horizon_seconds=20)
+
+        self.assertTrue(asyncio.run(run()))
+        connections.close_all()
 
 
 class DefaultClientFactoryAsyncTests(TransactionTestCase):

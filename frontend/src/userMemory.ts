@@ -26,6 +26,7 @@ export interface ScheduleMemory {
   lead_seconds?: string;
   max_window_seconds?: string;
   retry_interval_ms?: string;
+  fire_early_ms?: string;
   manual_dest?: boolean;
 }
 

@@ -30,6 +30,7 @@ class ScheduleAdmin(admin.ModelAdmin):
         "status",
         "lead_seconds",
         "max_window_seconds",
+        "fire_early_ms",
         "created_at",
     )
     list_filter = ("status",)
@@ -39,7 +40,7 @@ class ScheduleAdmin(admin.ModelAdmin):
 
 @admin.register(SendLog)
 class SendLogAdmin(admin.ModelAdmin):
-    list_display = ("id", "schedule", "attempt_at", "success", "latency_ms")
+    list_display = ("id", "schedule", "attempt_at", "success", "latency_ms", "skew_ms")
     list_filter = ("success",)
     search_fields = ("error",)
     readonly_fields = ("attempt_at",)
