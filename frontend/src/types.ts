@@ -6,7 +6,21 @@ export interface TelegramAccount {
   label: string;
   phone: string;
   status: AccountStatus;
+  region: string;
   created_at: string;
+}
+
+export interface RegionOption {
+  id: string;
+  label: string;
+}
+
+export interface SpeedResult {
+  region: string;
+  connect_ms: number;
+  avg_ms: number;
+  min_ms: number;
+  samples: number;
 }
 
 export interface Schedule {

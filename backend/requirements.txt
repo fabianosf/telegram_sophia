@@ -9,3 +9,4 @@ python-dotenv==1.2.4
 gunicorn==23.0.0
 whitenoise==6.9.0
 redis==5.2.1
+python-socks[asyncio]>=2.4,<3

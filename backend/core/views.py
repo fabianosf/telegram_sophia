@@ -18,6 +18,8 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 
 from core.models import Schedule, SendLog, TelegramAccount, TelegramApp
 from core.serializers import (
+    AccountRegionSerializer,
+    SpeedTestSerializer,
     AccountConfirmSerializer,
     AccountStartSerializer,
     RegisterSerializer,
@@ -27,6 +29,8 @@ from core.serializers import (
     TelegramAppWriteSerializer,
 )
 from core.services.telegram_auth import (
+    available_regions,
+    speed_test,
     TelegramAuthError,
     confirm_login,
     credentials_for_user,
@@ -204,6 +208,7 @@ class TelegramAccountViewSet(
                 account.phone,
                 api_id=api_id,
                 api_hash=api_hash,
+                region=account.region,
             )
         except TelegramAuthError as exc:
             account.status = TelegramAccount.Status.ERROR
@@ -239,14 +244,17 @@ class TelegramAccountViewSet(
             .first()
         )
         created = account is None
+        region = serializer.validated_data.get("region", "")
         if account:
             account.label = label
-            account.save(update_fields=["label"])
+            account.region = region
+            account.save(update_fields=["label", "region"])
         else:
             account = TelegramAccount.objects.create(
                 owner=request.user,
                 label=label,
                 phone=phone,
+                region=region,
                 status=TelegramAccount.Status.PENDING,
             )
         error_response = self._send_login_code(account)
@@ -293,10 +301,49 @@ class TelegramAccountViewSet(
                 decrypt(account.session_encrypted),
                 api_id=api_id,
                 api_hash=api_hash,
+                region=account.region,
             )
         except TelegramAuthError as exc:
             return self._auth_error_response(exc)
         return Response(items)
+
+    @action(detail=False, methods=["get"], url_path="regions")
+    def regions(self, request):
+        """Regiões de envio disponíveis (só as que o servidor realmente suporta)."""
+        return Response(available_regions())
+
+    @action(detail=True, methods=["post"], url_path="region")
+    def set_region(self, request, pk=None):
+        account = self.get_object()
+        serializer = AccountRegionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        account.region = serializer.validated_data["region"]
+        account.save(update_fields=["region"])
+        return Response(TelegramAccountSerializer(account).data)
+
+    @action(detail=True, methods=["post"], url_path="speed-test")
+    def speed_test(self, request, pk=None):
+        """Mede a velocidade real até o Telegram por uma região (ou a atual)."""
+        account = self.get_object()
+        if account.status != TelegramAccount.Status.CONNECTED or not account.session_encrypted:
+            return Response(
+                {"detail": "Account must be connected."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        serializer = SpeedTestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        region = serializer.validated_data["region"] if "region" in request.data else account.region
+        try:
+            api_id, api_hash = self._telegram_creds(account.owner)
+            result = async_to_sync(speed_test)(
+                decrypt(account.session_encrypted),
+                api_id=api_id,
+                api_hash=api_hash,
+                region=region,
+            )
+        except TelegramAuthError as exc:
+            return self._auth_error_response(exc)
+        return Response(result)
 
     @action(detail=True, methods=["post"], url_path="confirm")
     def confirm(self, request, pk=None):
@@ -323,6 +370,7 @@ class TelegramAccountViewSet(
                 serializer.validated_data.get("password") or None,
                 api_id=api_id,
                 api_hash=api_hash,
+                region=account.region,
             )
         except TelegramAuthError as exc:
             return self._auth_error_response(exc)
@@ -344,7 +392,10 @@ class TelegramAccountViewSet(
         try:
             api_id, api_hash = self._telegram_creds(account.owner)
             async_to_sync(disconnect_session)(
-                session_string, api_id=api_id, api_hash=api_hash
+                session_string,
+                api_id=api_id,
+                api_hash=api_hash,
+                region=account.region,
             )
         except TelegramAuthError as exc:
             return self._auth_error_response(exc)

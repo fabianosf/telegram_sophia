@@ -390,3 +390,81 @@ class AccountDialogsTests(APITestCase):
         self.assertEqual(response.data[0]["chat_ref"], "@grupoenorme")
         self.assertEqual(response.data[0]["kind"], "group")
         mock_list.assert_awaited()
+
+
+REGION_SETTINGS = {
+    **API_SETTINGS,
+    "TELEGRAM_REGION_PROXIES": '{"miami": "socks5://u:p%40ss@10.0.0.1:1080"}',
+}
+
+
+@override_settings(**REGION_SETTINGS)
+class AccountRegionTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="alice", password="secret123")
+        login = self.client.post(
+            "/api/auth/login/",
+            {"username": "alice", "password": "secret123"},
+            format="json",
+        )
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {login.data['access']}")
+        self.account = TelegramAccount.objects.create(
+            owner=self.user,
+            label="Pessoal",
+            phone="+5511",
+            session_encrypted=encrypt("SESSION"),
+            status=TelegramAccount.Status.CONNECTED,
+        )
+
+    def test_lists_only_configured_regions(self):
+        response = self.client.get("/api/accounts/regions/")
+        ids = [r["id"] for r in response.data]
+        self.assertEqual(ids, ["", "miami"])
+
+    @override_settings(TELEGRAM_REGION_PROXIES="")
+    def test_no_regions_without_proxies(self):
+        response = self.client.get("/api/accounts/regions/")
+        self.assertEqual([r["id"] for r in response.data], [""])
+
+    def test_set_region_and_reject_unknown(self):
+        ok = self.client.post(
+            f"/api/accounts/{self.account.id}/region/",
+            {"region": "miami"},
+            format="json",
+        )
+        self.assertEqual(ok.status_code, status.HTTP_200_OK)
+        self.account.refresh_from_db()
+        self.assertEqual(self.account.region, "miami")
+        bad = self.client.post(
+            f"/api/accounts/{self.account.id}/region/",
+            {"region": "mexico"},
+            format="json",
+        )
+        self.assertEqual(bad.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_proxy_parsing(self):
+        from core.services.telegram_auth import proxy_for_region
+
+        self.assertEqual(
+            proxy_for_region("miami"), ("socks5", "10.0.0.1", 1080, True, "u", "p@ss")
+        )
+        self.assertIsNone(proxy_for_region(""))
+        self.assertIsNone(proxy_for_region("france"))
+
+    @patch("core.views.speed_test", new_callable=AsyncMock)
+    def test_speed_test_uses_requested_region(self, mock_speed):
+        mock_speed.return_value = {
+            "region": "miami",
+            "connect_ms": 80,
+            "avg_ms": 40,
+            "min_ms": 35,
+            "samples": 5,
+        }
+        response = self.client.post(
+            f"/api/accounts/{self.account.id}/speed-test/",
+            {"region": "miami"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["avg_ms"], 40)
+        self.assertEqual(mock_speed.await_args.kwargs["region"], "miami")

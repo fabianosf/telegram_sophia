@@ -137,6 +137,8 @@ else:
     FERNET_KEYS = []
 FERNET_KEY = FERNET_KEYS[0] if FERNET_KEYS else ""
 
+# JSON: {"miami": "socks5://user:pass@host:1080", "mexico": "...", "france": "..."}
+TELEGRAM_REGION_PROXIES = env("TELEGRAM_REGION_PROXIES", "") or ""
 TELEGRAM_API_ID = env("TELEGRAM_API_ID", "")
 TELEGRAM_API_HASH = env("TELEGRAM_API_HASH", "")
 

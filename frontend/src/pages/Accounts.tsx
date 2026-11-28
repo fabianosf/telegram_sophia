@@ -4,7 +4,10 @@ import {
   confirmAccount,
   deleteAccount,
   listAccounts,
+  listRegions,
   retryAccount,
+  setAccountRegion,
+  speedTest,
   startAccount,
 } from "../api/accounts";
 import { ApiError } from "../api/errors";
@@ -12,7 +15,7 @@ import { formatBrasilia } from "../datetime";
 import { usePolling } from "../hooks/usePolling";
 import { getTelegramApp } from "../api/telegramApp";
 import { ACCOUNT_STATUS_LABEL } from "../status";
-import type { TelegramAccount, TelegramAppConfig } from "../types";
+import type { RegionOption, SpeedResult, TelegramAccount, TelegramAppConfig } from "../types";
 import { loadAccountMemory, saveAccountMemory } from "../userMemory";
 
 interface FormState {
@@ -32,6 +35,131 @@ function initialForm(): FormState {
   };
 }
 
+function RegionCard({
+  accounts,
+  regions,
+  onChanged,
+}: {
+  accounts: TelegramAccount[];
+  regions: RegionOption[];
+  onChanged: () => Promise<void> | void;
+}) {
+  const [accountId, setAccountId] = useState<number>(accounts[0]?.id ?? 0);
+  const [results, setResults] = useState<Record<string, SpeedResult | "erro">>({});
+  const [testing, setTesting] = useState(false);
+  const [msg, setMsg] = useState("");
+  const account = accounts.find((a) => a.id === accountId) ?? accounts[0];
+  if (!account) return null;
+
+  const ms = (r: SpeedResult | "erro" | undefined) =>
+    r && r !== "erro" ? r.avg_ms : Number.POSITIVE_INFINITY;
+  const best = regions
+    .map((r) => r.id)
+    .filter((id) => results[id] && results[id] !== "erro")
+    .sort((a, b) => ms(results[a]) - ms(results[b]))[0];
+
+  async function compare() {
+    setTesting(true);
+    setMsg("");
+    setResults({});
+    for (const region of regions) {
+      try {
+        const r = await speedTest(account.id, region.id);
+        setResults((cur) => ({ ...cur, [region.id]: r }));
+      } catch {
+        setResults((cur) => ({ ...cur, [region.id]: "erro" }));
+      }
+    }
+    setTesting(false);
+  }
+
+  async function use(region: string) {
+    try {
+      await setAccountRegion(account.id, region);
+      setMsg("Região salva. Os próximos envios já usam esse caminho.");
+      await onChanged();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "Falha ao salvar.");
+    }
+  }
+
+  return (
+    <section className="card">
+      <h2>Velocidade e região de envio</h2>
+      <p className="muted">
+        Teste qual caminho chega mais rápido ao Telegram e escolha o melhor. Quanto menor os
+        milissegundos, melhor. Troque de região só se o teste mostrar ganho real.
+      </p>
+      {accounts.length > 1 ? (
+        <label>
+          Conta
+          <select
+            value={account.id}
+            onChange={(e) => {
+              setAccountId(Number(e.target.value));
+              setResults({});
+            }}
+          >
+            {accounts.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+      {msg ? <div className="banner ok">{msg}</div> : null}
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Região</th>
+              <th>Velocidade</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {regions.map((r) => {
+              const res = results[r.id];
+              const current = (account.region || "") === r.id;
+              return (
+                <tr key={r.id || "auto"}>
+                  <td>
+                    {r.label}
+                    {current ? " ✓ em uso" : ""}
+                    {best === r.id && !testing ? " ⚡ mais rápida" : ""}
+                  </td>
+                  <td>
+                    {res === "erro"
+                      ? "falhou"
+                      : res
+                        ? `${res.avg_ms} ms (melhor ${res.min_ms} ms)`
+                        : testing
+                          ? "…"
+                          : "—"}
+                  </td>
+                  <td>
+                    {!current ? (
+                      <button className="ghost" onClick={() => void use(r.id)}>
+                        Usar esta
+                      </button>
+                    ) : null}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <div className="row-actions" style={{ marginTop: 12 }}>
+        <button className="primary" disabled={testing} onClick={() => void compare()}>
+          {testing ? "Testando…" : "Testar velocidade das regiões"}
+        </button>
+      </div>
+    </section>
+  );
+}
+
 export default function Accounts() {
   const { data: accounts, error, loading, reload } = usePolling(listAccounts, 3000);
   const connected = accounts.filter((a) => a.status === "connected");
@@ -44,6 +172,13 @@ export default function Accounts() {
   const [busy, setBusy] = useState(false);
   const [telegramApp, setTelegramApp] = useState<TelegramAppConfig | null>(null);
   const [showAdd, setShowAdd] = useState(false);
+  const [regions, setRegions] = useState<RegionOption[]>([]);
+
+  useEffect(() => {
+    listRegions()
+      .then(setRegions)
+      .catch(() => setRegions([]));
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -290,6 +425,10 @@ export default function Accounts() {
           </div>
         ) : null}
       </section>
+
+      {connected.length > 0 && regions.length > 1 ? (
+        <RegionCard accounts={connected} regions={regions} onChanged={reload} />
+      ) : null}
 
       {needsLinkForm ? (
         <section className="card">

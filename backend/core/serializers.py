@@ -8,10 +8,19 @@ from core.models import Schedule, SendLog, TelegramAccount
 User = get_user_model()
 
 
+def validate_region_value(value: str) -> str:
+    from core.services.telegram_auth import configured_region_proxies
+
+    value = (value or "").strip()
+    if value and value not in configured_region_proxies():
+        raise serializers.ValidationError("Região indisponível neste servidor.")
+    return value
+
+
 class TelegramAccountSerializer(serializers.ModelSerializer):
     class Meta:
         model = TelegramAccount
-        fields = ("id", "label", "phone", "status", "created_at")
+        fields = ("id", "label", "phone", "status", "region", "created_at")
         read_only_fields = fields
 
 
@@ -29,6 +38,24 @@ class TelegramAppWriteSerializer(serializers.Serializer):
 class AccountStartSerializer(serializers.Serializer):
     label = serializers.CharField(max_length=100)
     phone = serializers.CharField(max_length=32)
+    region = serializers.CharField(required=False, allow_blank=True, default="")
+
+    def validate_region(self, value: str) -> str:
+        return validate_region_value(value)
+
+
+class AccountRegionSerializer(serializers.Serializer):
+    region = serializers.CharField(allow_blank=True)
+
+    def validate_region(self, value: str) -> str:
+        return validate_region_value(value)
+
+
+class SpeedTestSerializer(serializers.Serializer):
+    region = serializers.CharField(required=False, allow_blank=True, default="")
+
+    def validate_region(self, value: str) -> str:
+        return validate_region_value(value)
 
 
 class AccountConfirmSerializer(serializers.Serializer):

@@ -31,6 +31,8 @@ class TelegramAccount(models.Model):
     phone = models.CharField(max_length=32)
     session_encrypted = models.TextField(blank=True)
     phone_code_hash = models.CharField(max_length=128, blank=True)
+    # Região de saída (proxy configurado no servidor). Vazio = conexão direta.
+    region = models.CharField(max_length=16, blank=True, default="")
     status = models.CharField(
         max_length=16,
         choices=Status.choices,

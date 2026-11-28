@@ -199,7 +199,12 @@ def default_client_factory(account: TelegramAccount):
         if "FERNET" in str(exc).upper():
             raise InvalidTelegramSession(str(exc)) from exc
         raise
-    return build_client(session_string, api_id=api_id, api_hash=api_hash)
+    return build_client(
+        session_string,
+        api_id=api_id,
+        api_hash=api_hash,
+        region=account.region,
+    )
 
 
 _build_client_async = sync_to_async(default_client_factory, thread_sensitive=True)
@@ -333,12 +338,24 @@ class ClientPool:
         self._clients: dict[int, object] = {}
         self._last_used: dict[int, float] = {}
         self._inflight: dict[int, int] = {}
+        self._regions: dict[int, str] = {}
+
+    def region_of(self, account_id: int) -> str:
+        return self._regions.get(account_id, "")
+
+    async def drop(self, account_id: int) -> None:
+        client = self._clients.pop(account_id, None)
+        self._last_used.pop(account_id, None)
+        self._regions.pop(account_id, None)
+        if client is not None:
+            await self._disconnect(client)
 
     def get(self, account_id: int):
         return self._clients.get(account_id)
 
-    def put(self, account_id: int, client) -> None:
+    def put(self, account_id: int, client, region: str = "") -> None:
         self._clients[account_id] = client
+        self._regions[account_id] = region
         self._last_used[account_id] = time.monotonic()
 
     def touch(self, account_id: int) -> None:
@@ -371,6 +388,7 @@ class ClientPool:
             await self._disconnect(client)
             self._clients.pop(account_id, None)
             self._last_used.pop(account_id, None)
+            self._regions.pop(account_id, None)
 
     async def disconnect_all(self) -> None:
         for account_id, client in list(self._clients.items()):
@@ -378,6 +396,7 @@ class ClientPool:
         self._clients.clear()
         self._last_used.clear()
         self._inflight.clear()
+        self._regions.clear()
 
     async def _disconnect(self, client) -> None:
         disconnect = getattr(client, "disconnect", None)
@@ -399,6 +418,15 @@ class WorkerEngine:
 
     async def get_client(self, account: TelegramAccount):
         cached = self.pool.get(account.id)
+        region = account.region or ""
+        if (
+            cached is not None
+            and self.pool.region_of(account.id) != region
+            and not self.pool.inflight(account.id)
+        ):
+            # Região mudou: reconecta pelo novo caminho
+            await self.pool.drop(account.id)
+            cached = None
         if cached is not None:
             self.pool.touch(account.id)
             return cached
@@ -418,7 +446,7 @@ class WorkerEngine:
                 result = await result
             if result is False:
                 raise InvalidTelegramSession("Session is not authorized")
-        self.pool.put(account.id, client)
+        self.pool.put(account.id, client, region)
         return client
 
     async def tick(
