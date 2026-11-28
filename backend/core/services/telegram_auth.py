@@ -84,11 +84,11 @@ def configured_region_proxies() -> dict[str, str]:
 
 
 def available_regions() -> list[dict]:
-    """Regiões que realmente têm proxy configurado (mais 'automático')."""
-    items = [{"id": "", "label": "Automático (servidor atual)"}]
-    for key in REGION_LABELS:
-        if key in configured_region_proxies():
-            items.append({"id": key, "label": REGION_LABELS[key]})
+    """Todas as regiões que a pessoa pode escolher. `ready` indica proxy real."""
+    proxies = configured_region_proxies()
+    items = [{"id": "", "label": "Automático (servidor atual)", "ready": True}]
+    for key, label in REGION_LABELS.items():
+        items.append({"id": key, "label": label, "ready": key in proxies})
     return items
 
 

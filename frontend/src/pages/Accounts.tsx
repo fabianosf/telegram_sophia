@@ -58,11 +58,13 @@ function RegionCard({
     .filter((id) => results[id] && results[id] !== "erro")
     .sort((a, b) => ms(results[a]) - ms(results[b]))[0];
 
+  const testable = regions.filter((region) => region.ready);
+
   async function compare() {
     setTesting(true);
     setMsg("");
     setResults({});
-    for (const region of regions) {
+    for (const region of testable) {
       try {
         const r = await speedTest(account.id, region.id);
         setResults((cur) => ({ ...cur, [region.id]: r }));
@@ -73,10 +75,14 @@ function RegionCard({
     setTesting(false);
   }
 
-  async function use(region: string) {
+  async function use(region: RegionOption) {
     try {
-      await setAccountRegion(account.id, region);
-      setMsg("Região salva. Os próximos envios já usam esse caminho.");
+      await setAccountRegion(account.id, region.id);
+      setMsg(
+        region.ready
+          ? "Região salva. Os próximos envios já usam esse caminho."
+          : "Região salva. Esta região ainda usa o servidor atual até haver um caminho próprio."
+      );
       await onChanged();
     } catch (err) {
       setMsg(err instanceof Error ? err.message : "Falha ao salvar.");
@@ -85,10 +91,10 @@ function RegionCard({
 
   return (
     <section className="card">
-      <h2>Velocidade e região de envio</h2>
+      <h2>Região de envio</h2>
       <p className="muted">
-        Teste qual caminho chega mais rápido ao Telegram e escolha o melhor. Quanto menor os
-        milissegundos, melhor. Troque de região só se o teste mostrar ganho real.
+        Escolha a região desta conta e toque em Usar esta. A escolha fica salva para os próximos
+        envios.
       </p>
       {accounts.length > 1 ? (
         <label>
@@ -108,7 +114,9 @@ function RegionCard({
           </select>
         </label>
       ) : null}
-      {msg ? <div className="banner ok">{msg}</div> : null}
+      {msg ? (
+        <div className={`banner ${msg.startsWith("Falha") ? "" : "ok"}`}>{msg}</div>
+      ) : null}
       <div className="table-wrap">
         <table>
           <thead>
@@ -130,17 +138,19 @@ function RegionCard({
                     {best === r.id && !testing ? " ⚡ mais rápida" : ""}
                   </td>
                   <td>
-                    {res === "erro"
-                      ? "falhou"
-                      : res
-                        ? `${res.avg_ms} ms (melhor ${res.min_ms} ms)`
-                        : testing
-                          ? "…"
-                          : "—"}
+                    {!r.ready
+                      ? "servidor atual"
+                      : res === "erro"
+                        ? "falhou"
+                        : res
+                          ? `${res.avg_ms} ms (melhor ${res.min_ms} ms)`
+                          : testing
+                            ? "…"
+                            : "—"}
                   </td>
                   <td>
                     {!current ? (
-                      <button className="ghost" onClick={() => void use(r.id)}>
+                      <button className="ghost" onClick={() => void use(r)}>
                         Usar esta
                       </button>
                     ) : null}
@@ -151,11 +161,13 @@ function RegionCard({
           </tbody>
         </table>
       </div>
-      <div className="row-actions" style={{ marginTop: 12 }}>
-        <button className="primary" disabled={testing} onClick={() => void compare()}>
-          {testing ? "Testando…" : "Testar velocidade das regiões"}
-        </button>
-      </div>
+      {testable.length > 1 ? (
+        <div className="row-actions" style={{ marginTop: 12 }}>
+          <button className="primary" disabled={testing} onClick={() => void compare()}>
+            {testing ? "Testando…" : "Testar velocidade"}
+          </button>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -426,7 +438,7 @@ export default function Accounts() {
         ) : null}
       </section>
 
-      {connected.length > 0 && regions.length > 1 ? (
+      {connected.length > 0 && regions.length > 0 ? (
         <RegionCard accounts={connected} regions={regions} onChanged={reload} />
       ) : null}
 

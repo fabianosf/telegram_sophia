@@ -416,28 +416,37 @@ class AccountRegionTests(APITestCase):
             status=TelegramAccount.Status.CONNECTED,
         )
 
-    def test_lists_only_configured_regions(self):
+    def test_lists_all_regions_and_marks_ready(self):
         response = self.client.get("/api/accounts/regions/")
-        ids = [r["id"] for r in response.data]
-        self.assertEqual(ids, ["", "miami"])
+        by_id = {r["id"]: r for r in response.data}
+        self.assertEqual(
+            list(by_id), ["", "sao_paulo", "miami", "mexico", "france"]
+        )
+        self.assertTrue(by_id[""]["ready"])
+        self.assertTrue(by_id["miami"]["ready"])
+        self.assertFalse(by_id["france"]["ready"])
 
     @override_settings(TELEGRAM_REGION_PROXIES="")
-    def test_no_regions_without_proxies(self):
+    def test_regions_stay_choosable_without_proxies(self):
         response = self.client.get("/api/accounts/regions/")
-        self.assertEqual([r["id"] for r in response.data], [""])
+        self.assertEqual(
+            [r["id"] for r in response.data],
+            ["", "sao_paulo", "miami", "mexico", "france"],
+        )
+        self.assertTrue(all(r["ready"] is (r["id"] == "") for r in response.data))
 
     def test_set_region_and_reject_unknown(self):
         ok = self.client.post(
             f"/api/accounts/{self.account.id}/region/",
-            {"region": "miami"},
+            {"region": "mexico"},
             format="json",
         )
         self.assertEqual(ok.status_code, status.HTTP_200_OK)
         self.account.refresh_from_db()
-        self.assertEqual(self.account.region, "miami")
+        self.assertEqual(self.account.region, "mexico")
         bad = self.client.post(
             f"/api/accounts/{self.account.id}/region/",
-            {"region": "mexico"},
+            {"region": "paris"},
             format="json",
         )
         self.assertEqual(bad.status_code, status.HTTP_400_BAD_REQUEST)

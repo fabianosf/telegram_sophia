@@ -13,6 +13,7 @@ export interface TelegramAccount {
 export interface RegionOption {
   id: string;
   label: string;
+  ready: boolean;
 }
 
 export interface SpeedResult {

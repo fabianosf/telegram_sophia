@@ -9,11 +9,11 @@ User = get_user_model()
 
 
 def validate_region_value(value: str) -> str:
-    from core.services.telegram_auth import configured_region_proxies
+    from core.services.telegram_auth import REGION_LABELS
 
     value = (value or "").strip()
-    if value and value not in configured_region_proxies():
-        raise serializers.ValidationError("Região indisponível neste servidor.")
+    if value and value not in REGION_LABELS:
+        raise serializers.ValidationError("Região indisponível.")
     return value
 
 
