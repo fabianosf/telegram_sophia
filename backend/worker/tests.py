@@ -337,7 +337,7 @@ class WorkerResilienceTests(WorkerTestBase):
         schedule.refresh_from_db()
         self.assertEqual(schedule.status, Schedule.Status.FAILED)
         messages = list(
-            SendLog.objects.filter(schedule=schedule).values_list("message", flat=True)
+            SendLog.objects.filter(schedule=schedule).values_list("error", flat=True)
         )
         self.assertTrue(any("Falha de conexão" in m for m in messages))
 
@@ -359,7 +359,7 @@ class WorkerResilienceTests(WorkerTestBase):
         self.assertEqual(schedule.status, Schedule.Status.SENT)
         self.assertTrue(
             SendLog.objects.filter(
-                schedule=schedule, success=False, message__contains="pausa"
+                schedule=schedule, success=False, error__contains="pausa"
             ).exists()
         )
 
@@ -373,7 +373,7 @@ class WorkerResilienceTests(WorkerTestBase):
         schedule.refresh_from_db()
         self.assertEqual(schedule.status, Schedule.Status.FAILED)
         log = SendLog.objects.filter(schedule=schedule).latest("id")
-        self.assertIn("pausa de 120s", log.message)
+        self.assertIn("pausa de 120s", log.error)
 
 
 class DefaultClientFactoryAsyncTests(TransactionTestCase):

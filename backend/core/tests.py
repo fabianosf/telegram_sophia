@@ -13,6 +13,7 @@ from core.utils import crypto
 User = get_user_model()
 
 
+@override_settings(REGISTRATION_ENABLED=True, REGISTRATION_INVITE_CODE="")
 class ApiAuthTests(APITestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="alice", password="secret123")
