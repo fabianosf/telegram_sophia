@@ -46,7 +46,15 @@ SESSION_ERRORS = (
 # Após send_message ter sido invocado, timeout/conexão ambíguos podem indicar envio
 # duplicado — registramos falha e não repetimos automaticamente.
 AMBIGUOUS_SEND_ERRORS = (asyncio.TimeoutError, TimeoutError, ConnectionError, OSError)
+# Falhas de rede/proxy antes do envio: seguro tentar de novo (nada foi enviado).
+try:
+    from python_socks import ProxyError as _ProxyError
+
+    TRANSIENT_ERRORS = AMBIGUOUS_SEND_ERRORS + (_ProxyError,)
+except Exception:  # pragma: no cover - python-socks é opcional
+    TRANSIENT_ERRORS = AMBIGUOUS_SEND_ERRORS
 STUCK_GRACE = timedelta(seconds=60)
+CONNECT_RETRY_SECONDS = 1.0
 HEARTBEAT_PATH = Path(
     os.environ.get("WORKER_HEARTBEAT_PATH", "/tmp/sophia_worker_heartbeat")
 )
@@ -64,6 +72,23 @@ logger = logging.getLogger("worker.engine")
 
 class InvalidTelegramSession(Exception):
     pass
+
+
+def friendly_error(exc: BaseException) -> str:
+    """Mensagem em português simples para o usuário (detalhe técnico vai no log)."""
+    if isinstance(exc, FloodWaitError):
+        return f"O Telegram pediu uma pausa de {exc.seconds}s antes de novo envio."
+    if isinstance(exc, (*SESSION_ERRORS, InvalidTelegramSession)):
+        return "Conta do Telegram desconectada. Reconecte em Contas."
+    if isinstance(exc, WRITE_ERRORS):
+        return (
+            "Sem permissão para enviar neste grupo ou canal. "
+            "Confira se a conta participa e pode escrever."
+        )
+    if isinstance(exc, TRANSIENT_ERRORS):
+        detail = str(exc) or exc.__class__.__name__
+        return f"Falha de conexão com o Telegram (rede ou região escolhida): {detail}"
+    return str(exc) or exc.__class__.__name__
 
 
 def parse_chat_ref(value: str):
@@ -495,26 +520,57 @@ class WorkerEngine:
 
     async def _process_locked(self, schedule: Schedule) -> None:
         account = schedule.account
-        try:
-            client = await self.get_client(account)
-            entity, destination = await resolve_destination(client, schedule.chat_ref)
-            await set_schedule_destination(schedule.id, str(destination))
-        except SESSION_ERRORS as exc:
-            await add_send_log(schedule.id, False, str(exc), 0)
-            await set_account_error(account.id)
-            await set_schedule_status(schedule.id, Schedule.Status.FAILED)
-            return
-        except InvalidTelegramSession as exc:
-            await add_send_log(schedule.id, False, str(exc), 0)
-            await set_account_error(account.id)
-            await set_schedule_status(schedule.id, Schedule.Status.FAILED)
-            return
-        except Exception as exc:
-            await add_send_log(schedule.id, False, str(exc), 0)
-            await set_schedule_status(schedule.id, Schedule.Status.FAILED)
-            return
-
         deadline = schedule.run_at + timedelta(seconds=schedule.max_window_seconds)
+        attempts = 0
+        while True:
+            try:
+                client = await self.get_client(account)
+                entity, destination = await resolve_destination(
+                    client, schedule.chat_ref
+                )
+                await set_schedule_destination(schedule.id, str(destination))
+                break
+            except (*SESSION_ERRORS, InvalidTelegramSession) as exc:
+                await add_send_log(schedule.id, False, friendly_error(exc), 0)
+                await set_account_error(account.id)
+                await set_schedule_status(schedule.id, Schedule.Status.FAILED)
+                return
+            except TRANSIENT_ERRORS as exc:
+                # Rede/proxy instável: refaz a conexão e tenta de novo na janela.
+                attempts += 1
+                logger.warning(
+                    "schedule %s connect attempt %s failed: %r",
+                    schedule.id,
+                    attempts,
+                    exc,
+                )
+                if self.pool.inflight(account.id) <= 1:
+                    await self.pool.drop(account.id)
+                remaining = (deadline - timezone.now()).total_seconds()
+                if remaining <= 0:
+                    await add_send_log(
+                        schedule.id,
+                        False,
+                        f"{friendly_error(exc)} (tentativas: {attempts})",
+                        0,
+                    )
+                    await set_schedule_status(schedule.id, Schedule.Status.FAILED)
+                    return
+                if attempts == 1:
+                    await add_send_log(
+                        schedule.id,
+                        False,
+                        f"{friendly_error(exc)} Tentando de novo automaticamente.",
+                        0,
+                    )
+                await asyncio.sleep(min(CONNECT_RETRY_SECONDS, remaining))
+                if await get_schedule_status(schedule.id) != Schedule.Status.RUNNING:
+                    return
+            except Exception as exc:
+                await add_send_log(schedule.id, False, friendly_error(exc), 0)
+                await set_schedule_status(schedule.id, Schedule.Status.FAILED)
+                return
+
         early_ms = max(int(getattr(schedule, "fire_early_ms", 0) or 0), 0)
         fire_at = schedule.run_at - timedelta(milliseconds=early_ms)
         delay = (fire_at - timezone.now()).total_seconds()
@@ -557,10 +613,22 @@ class WorkerEngine:
                 return
             except FloodWaitError as exc:
                 latency = int((time.perf_counter() - started) * 1000)
+                remaining = (deadline - timezone.now()).total_seconds()
+                if exc.seconds < remaining:
+                    # A pausa cabe na janela: espera e tenta de novo.
+                    await add_send_log(
+                        schedule.id,
+                        False,
+                        f"{friendly_error(exc)} Aguardando e tentando de novo.",
+                        latency,
+                        skew_ms=skew_ms,
+                    )
+                    await asyncio.sleep(exc.seconds)
+                    continue
                 await add_send_log(
                     schedule.id,
                     False,
-                    f"FloodWaitError: aguarde {exc.seconds}s",
+                    friendly_error(exc),
                     latency,
                     skew_ms=skew_ms,
                 )
@@ -569,7 +637,7 @@ class WorkerEngine:
             except SESSION_ERRORS as exc:
                 latency = int((time.perf_counter() - started) * 1000)
                 await add_send_log(
-                    schedule.id, False, str(exc), latency, skew_ms=skew_ms
+                    schedule.id, False, friendly_error(exc), latency, skew_ms=skew_ms
                 )
                 await set_account_error(account.id)
                 await set_schedule_status(schedule.id, Schedule.Status.FAILED)
@@ -577,7 +645,7 @@ class WorkerEngine:
             except WRITE_ERRORS as exc:
                 latency = int((time.perf_counter() - started) * 1000)
                 await add_send_log(
-                    schedule.id, False, str(exc), latency, skew_ms=skew_ms
+                    schedule.id, False, friendly_error(exc), latency, skew_ms=skew_ms
                 )
             except AMBIGUOUS_SEND_ERRORS as exc:
                 latency = int((time.perf_counter() - started) * 1000)

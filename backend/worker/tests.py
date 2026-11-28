@@ -9,6 +9,7 @@ from django.db import close_old_connections, connections
 from django.test import TransactionTestCase, override_settings
 from django.utils import timezone
 
+from telethon.errors import FloodWaitError
 from telethon.sessions import StringSession
 
 from core.models import Schedule, SendLog, TelegramAccount, TelegramApp
@@ -59,7 +60,7 @@ class FakeClient:
         return SimpleNamespace(id=self.send_calls)
 
 
-class WorkerEngineTests(TransactionTestCase):
+class WorkerTestBase(TransactionTestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="alice", password="secret123")
         self.account = TelegramAccount.objects.create(
@@ -95,6 +96,7 @@ class WorkerEngineTests(TransactionTestCase):
         data.update(kwargs)
         return Schedule.objects.create(**data)
 
+class WorkerEngineTests(WorkerTestBase):
     def test_claim_is_atomic(self):
         schedule = self._schedule()
 
@@ -295,6 +297,83 @@ class WorkerEngineTests(TransactionTestCase):
 
         self.assertTrue(asyncio.run(run()))
         connections.close_all()
+
+
+class WorkerResilienceTests(WorkerTestBase):
+    """Falhas de rede e FloodWait não devem perder o envio à toa."""
+
+    def _run_tick(self):
+        async def run():
+            await self.engine.tick(wait_tasks=True)
+
+        asyncio.run(run())
+        connections.close_all()
+
+    def test_connect_failure_is_retried_within_window(self):
+        calls = {"n": 0}
+
+        def factory(account):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise ConnectionError("proxy fora do ar")
+            return self.client
+
+        self.engine.client_factory = factory
+        schedule = self._schedule(max_window_seconds=5)
+        with patch("worker.engine.CONNECT_RETRY_SECONDS", 0.05):
+            self._run_tick()
+        schedule.refresh_from_db()
+        self.assertEqual(schedule.status, Schedule.Status.SENT)
+        self.assertGreaterEqual(calls["n"], 3)
+
+    def test_connect_failure_until_deadline_is_clear(self):
+        def factory(account):
+            raise ConnectionError("proxy fora do ar")
+
+        self.engine.client_factory = factory
+        schedule = self._schedule(max_window_seconds=1)
+        with patch("worker.engine.CONNECT_RETRY_SECONDS", 0.1):
+            self._run_tick()
+        schedule.refresh_from_db()
+        self.assertEqual(schedule.status, Schedule.Status.FAILED)
+        messages = list(
+            SendLog.objects.filter(schedule=schedule).values_list("message", flat=True)
+        )
+        self.assertTrue(any("Falha de conexão" in m for m in messages))
+
+    def test_short_flood_wait_waits_and_sends(self):
+        client = self.client
+        original = client.send_message
+        state = {"n": 0}
+
+        async def flaky(entity, message):
+            state["n"] += 1
+            if state["n"] == 1:
+                raise FloodWaitError(request=None, capture=1)
+            return await original(entity, message)
+
+        client.send_message = flaky
+        schedule = self._schedule(max_window_seconds=5)
+        self._run_tick()
+        schedule.refresh_from_db()
+        self.assertEqual(schedule.status, Schedule.Status.SENT)
+        self.assertTrue(
+            SendLog.objects.filter(
+                schedule=schedule, success=False, message__contains="pausa"
+            ).exists()
+        )
+
+    def test_long_flood_wait_fails_with_plain_message(self):
+        async def blocked(entity, message):
+            raise FloodWaitError(request=None, capture=120)
+
+        self.client.send_message = blocked
+        schedule = self._schedule(max_window_seconds=3)
+        self._run_tick()
+        schedule.refresh_from_db()
+        self.assertEqual(schedule.status, Schedule.Status.FAILED)
+        log = SendLog.objects.filter(schedule=schedule).latest("id")
+        self.assertIn("pausa de 120s", log.message)
 
 
 class DefaultClientFactoryAsyncTests(TransactionTestCase):

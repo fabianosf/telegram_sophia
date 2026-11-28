@@ -1,4 +1,5 @@
 import json
+import logging
 import time
 from urllib.parse import unquote, urlparse
 
@@ -13,6 +14,8 @@ from telethon.errors import (
 from telethon.sessions import StringSession
 
 from django.conf import settings
+
+logger = logging.getLogger(__name__)
 
 
 class TelegramAuthError(Exception):
@@ -83,30 +86,62 @@ def configured_region_proxies() -> dict[str, str]:
     }
 
 
-def available_regions() -> list[dict]:
-    """Todas as regiões que a pessoa pode escolher. `ready` indica proxy real."""
-    proxies = configured_region_proxies()
-    items = [{"id": "", "label": "Automático (servidor atual)", "ready": True}]
-    for key, label in REGION_LABELS.items():
-        items.append({"id": key, "label": label, "ready": key in proxies})
-    return items
-
-
-def proxy_for_region(region: str | None):
+def _parse_proxy_url(url: str):
     """Converte socks5://user:pass@host:port no formato aceito pelo Telethon."""
-    if not region:
+    try:
+        parsed = urlparse(url)
+        scheme = (parsed.scheme or "socks5").lower()
+        if scheme not in {"socks5", "socks4", "http"} or not parsed.hostname:
+            return None
+        port = parsed.port or (8080 if scheme == "http" else 1080)
+    except ValueError:
         return None
-    url = configured_region_proxies().get(region)
-    if not url:
-        return None
-    parsed = urlparse(url)
-    scheme = (parsed.scheme or "socks5").lower()
-    if scheme not in {"socks5", "socks4", "http"} or not parsed.hostname:
-        return None
-    port = parsed.port or (8080 if scheme == "http" else 1080)
     user = unquote(parsed.username) if parsed.username else None
     password = unquote(parsed.password) if parsed.password else None
     return (scheme, parsed.hostname, port, True, user, password)
+
+
+def available_regions() -> list[dict]:
+    """Todas as regiões que a pessoa pode escolher. `ready` indica proxy válido."""
+    proxies = configured_region_proxies()
+    items = [{"id": "", "label": "Automático (servidor atual)", "ready": True}]
+    for key, label in REGION_LABELS.items():
+        ready = key in proxies and _parse_proxy_url(proxies[key]) is not None
+        items.append({"id": key, "label": label, "ready": ready})
+    return items
+
+
+def region_config_problems() -> list[str]:
+    """Erros de configuração do TELEGRAM_REGION_PROXIES (para avisar o dono)."""
+    raw = (getattr(settings, "TELEGRAM_REGION_PROXIES", "") or "").strip()
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return ["TELEGRAM_REGION_PROXIES não é um JSON válido."]
+    if not isinstance(data, dict):
+        return ["TELEGRAM_REGION_PROXIES deve ser um objeto JSON."]
+    problems = []
+    for key, value in data.items():
+        if key not in REGION_LABELS:
+            problems.append(f"Região desconhecida: {key}.")
+        elif not value or _parse_proxy_url(str(value)) is None:
+            problems.append(f"Proxy inválido para a região {key}.")
+    return problems
+
+
+def proxy_for_region(region: str | None):
+    """Proxy da região escolhida; None = conexão direta pelo servidor."""
+    if not region:
+        return None
+    url = configured_region_proxies().get(region)
+    proxy = _parse_proxy_url(url) if url else None
+    if proxy is None:
+        logger.warning(
+            "Região %r sem proxy válido: usando o servidor atual.", region
+        )
+    return proxy
 
 
 def build_client(
@@ -282,8 +317,8 @@ async def speed_test(
 
     if not session_string:
         raise TelegramAuthError("Account has no Telegram session.", 400)
-    if region and region not in configured_region_proxies():
-        raise TelegramAuthError("Região não configurada no servidor.", 400)
+    if region and proxy_for_region(region) is None:
+        raise TelegramAuthError("Região sem proxy válido neste servidor.", 400)
     client = build_client(
         session_string, api_id=api_id, api_hash=api_hash, region=region
     )

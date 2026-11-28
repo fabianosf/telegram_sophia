@@ -1,4 +1,5 @@
 import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { listAccountDialogs, listAccounts } from "../api/accounts";
 import { ApiError } from "../api/errors";
 import {
@@ -69,6 +70,7 @@ export default function Schedules() {
   const { data: schedules, error, loading, reload } = usePolling(listSchedules, 3000);
   const { data: accounts, loading: loadingAccounts } = usePolling(listAccounts, 3000);
   const connected = accounts.filter((item) => item.status === "connected");
+  const lostAccounts = accounts.filter((item) => item.status === "error");
   const accountMap = useMemo(
     () => Object.fromEntries(accounts.map((item) => [item.id, item])),
     [accounts]
@@ -293,6 +295,11 @@ export default function Schedules() {
             {banner}
           </div>
         ) : null}
+        {lostAccounts.map((item) => (
+          <div className="banner" key={item.id}>
+            {item.label} {t("account_lost")} <Link to="/contas">{t("reconnect")}</Link>
+          </div>
+        ))}
         {loadingAccounts ? (
           <p className="empty">{t("loading_accounts")}</p>
         ) : connected.length === 0 ? (

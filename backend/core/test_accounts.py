@@ -451,6 +451,15 @@ class AccountRegionTests(APITestCase):
         )
         self.assertEqual(bad.status_code, status.HTTP_400_BAD_REQUEST)
 
+    @override_settings(TELEGRAM_REGION_PROXIES='{"miami": "lixo", "xx": "socks5://h:1"}')
+    def test_invalid_region_proxy_is_not_ready_and_reported(self):
+        from core.services.telegram_auth import region_config_problems
+
+        by_id = {r["id"]: r for r in self.client.get("/api/accounts/regions/").data}
+        self.assertFalse(by_id["miami"]["ready"])
+        problems = region_config_problems()
+        self.assertEqual(len(problems), 2)
+
     def test_proxy_parsing(self):
         from core.services.telegram_auth import proxy_for_region
 

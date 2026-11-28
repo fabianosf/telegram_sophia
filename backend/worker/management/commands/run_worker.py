@@ -2,6 +2,7 @@ import asyncio
 
 from django.core.management.base import BaseCommand
 
+from core.services.telegram_auth import region_config_problems
 from worker.engine import WorkerEngine
 
 
@@ -22,6 +23,8 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        for problem in region_config_problems():
+            self.stdout.write(self.style.WARNING(f"Região: {problem}"))
         engine = WorkerEngine(idle_seconds=options["idle_seconds"])
         if options["once"]:
             asyncio.run(engine.tick(wait_tasks=True, recover_stuck=True))
